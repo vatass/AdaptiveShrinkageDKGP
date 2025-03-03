@@ -7,7 +7,7 @@ This repository contains the official implementation of the paper:
 
 ## Overview
 
-This project implements an adaptive shrinkage estimation framework for personalized deep kernel regression, specifically designed for modeling individual brain trajectories. The method combines population-level deep kernel Gaussian processes with subject-specific models using an adaptive shrinkage estimator.
+This project implements an adaptive shrinkage estimation framework for personalized deep kernel regression, specifically designed for modeling individual brain trajectories. The method combines population-level deep kernel Gaussian processes with subject-specific models using  Adaptive Shrinkage Estimation.
 
 ## Installation
 
