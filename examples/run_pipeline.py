@@ -14,47 +14,80 @@ from adaptive_shrinkage_dkgp.models.adaptive_shrinkage import AdaptiveShrinkage
 
 def load_and_preprocess_data(
     data_path: str,
-    biomarker_name: str,
-    test_size: float = 0.2,
+    train_size: float = 0.6,
     val_size: float = 0.2,
     random_state: int = 42
 ) -> Tuple[Dict[str, torch.Tensor], List[str], List[str], List[str]]:
     """Load and preprocess the biomarker data.
     
     Args:
-        data_path: Path to the data file
-        biomarker_name: Name of the biomarker column
-        test_size: Proportion of data to use for testing
-        val_size: Proportion of training data to use for validation
+        data_path: Path to the data CSV file
+        train_size: Proportion of data to use for training
+        val_size: Proportion of data to use for validation
         random_state: Random seed
         
     Returns:
         Dictionary containing data tensors and lists of subject IDs
     """
+    print("Loading and preprocessing data...")
+    
     # Load data
     data = pd.read_csv(data_path)
     
     # Get unique subject IDs
     subject_ids = data['PTID'].unique()
     
-    # Split subjects into train, validation, and test
+    # First split into train+val and test
+    train_val_size = train_size + val_size
     train_val_ids, test_ids = train_test_split(
-        subject_ids, test_size=test_size, random_state=random_state
+        subject_ids,
+        train_size=train_val_size,
+        random_state=random_state
     )
+    
+    # Then split train+val into train and val
     train_ids, val_ids = train_test_split(
-        train_val_ids, test_size=val_size, random_state=random_state
+        train_val_ids,
+        train_size=train_size/train_val_size,
+        random_state=random_state
     )
     
-    # Create data tensors
-    def create_tensors(ids):
-        subset = data[data['PTID'].isin(ids)]
-        X = torch.FloatTensor(subset.drop([biomarker_name, 'PTID'], axis=1).values)
-        y = torch.FloatTensor(subset[biomarker_name].values).reshape(-1, 1)
-        return X, y
+    print(f'Train IDs: {len(train_ids)}')
+    print(f'Val IDs: {len(val_ids)}')
+    print(f'Test IDs: {len(test_ids)}')
     
-    train_x, train_y = create_tensors(train_ids)
-    val_x, val_y = create_tensors(val_ids)
-    test_x, test_y = create_tensors(test_ids)
+    # Extract data for each set
+    def extract_data(ids):
+        subset = data[data['PTID'].isin(ids)]
+        x = torch.FloatTensor(subset['X'].values)
+        y = torch.FloatTensor(subset['Y'].values)
+        return x, y, subset['PTID'].tolist()
+    
+    train_x, train_y, train_ids = extract_data(train_ids)
+    val_x, val_y, val_ids = extract_data(val_ids)
+    test_x, test_y, test_ids = extract_data(test_ids)
+    
+    # Squeeze target dimensions
+    train_y = train_y.squeeze()
+    val_y = val_y.squeeze()
+    test_y = test_y.squeeze()
+    
+    # Move to GPU if available
+    if torch.cuda.is_available():
+        device = torch.device('cuda')
+        train_x = train_x.to(device)
+        train_y = train_y.to(device)
+        val_x = val_x.to(device)
+        val_y = val_y.to(device)
+        test_x = test_x.to(device)
+        test_y = test_y.to(device)
+    
+    print(f'Train Data: {train_x.shape}')
+    print(f'Train Targets: {train_y.shape}')
+    print(f'Val Data: {val_x.shape}')
+    print(f'Val Targets: {val_y.shape}')
+    print(f'Test Data: {test_x.shape}')
+    print(f'Test Targets: {test_y.shape}')
     
     return {
         'train_x': train_x,
@@ -63,7 +96,7 @@ def load_and_preprocess_data(
         'val_y': val_y,
         'test_x': test_x,
         'test_y': test_y
-    }, list(train_ids), list(val_ids), list(test_ids)
+    }, train_ids, val_ids, test_ids
 
 def train_population_model(
     data: Dict[str, torch.Tensor],
@@ -255,32 +288,34 @@ def evaluate_personalization(
 
 def main():
     # Parameters
-    data_path = "data/biomarker_data.csv"
-    biomarker_name = "SPARE_AD"
-    input_dim = 10  # Update with actual input dimension
-    latent_dim = 5  # Update with actual latent dimension
+    data_path = "data/biomarker_data.csv"  # Path to your data file
+    model_dir = "models"
+    results_dir = "results"
     
-    # Create output directory
-    os.makedirs("models", exist_ok=True)
+    # Create output directories
+    os.makedirs(model_dir, exist_ok=True)
+    os.makedirs(results_dir, exist_ok=True)
     
     # Load and preprocess data
-    data, train_ids, val_ids, test_ids = load_and_preprocess_data(
-        data_path, biomarker_name
-    )
+    data, train_ids, val_ids, test_ids = load_and_preprocess_data(data_path)
+    
+    # Set dimensions based on data
+    input_dim = data['train_x'].shape[1]
+    latent_dim = input_dim // 2
     
     # Train population model
     pop_model = train_population_model(
         data,
         input_dim,
         latent_dim,
-        "models/population_dkgp.pt"
+        os.path.join(model_dir, "population_dkgp.pt")
     )
     
     # Train adaptive shrinkage
     shrinkage = train_adaptive_shrinkage(
         pop_model,
         data,
-        "models/adaptive_shrinkage.json"
+        os.path.join(model_dir, "adaptive_shrinkage.json")
     )
     
     # Evaluate personalization
@@ -292,15 +327,15 @@ def main():
     )
     
     # Save results
-    results.to_csv("results/personalization_results.csv", index=False)
+    results.to_csv(os.path.join(results_dir, "personalization_results.csv"), index=False)
     
     # Print summary
     print("\nResults Summary:")
     print("Mean MSE by number of observations:")
     summary = results.groupby('n_observations').agg({
-        'mse_population': 'mean',
-        'mse_subject_specific': 'mean',
-        'mse_combined': 'mean'
+        'mse_population': ['mean', 'std'],
+        'mse_subject_specific': ['mean', 'std'],
+        'mse_combined': ['mean', 'std']
     })
     print(summary)
 
