@@ -1,4 +1,4 @@
-# Adaptive Shrinkage Deep Kernel Gaussian Process (AS-DKGP)
+# Adaptive Shrinkage Deep Kernel Gaussian Process 
 
 This repository contains the official implementation of the paper:
 
@@ -35,7 +35,7 @@ We address the problem of predicting biomarker trajectories, modeled as a one-di
 
 1. Clone the repository:
 ```bash
-git clone https://github.com/yourusername/AdaptiveShrinkageDKGP.git
+git clone https://github.com/vatass/AdaptiveShrinkageDKGP.git
 cd AdaptiveShrinkageDKGP
 ```
 
