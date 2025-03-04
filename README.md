@@ -7,7 +7,23 @@ This repository contains the official implementation of the paper:
 
 ## Overview
 
-This project implements an adaptive shrinkage estimation framework for personalized deep kernel regression, specifically designed for modeling individual brain trajectories. The method combines population-level deep kernel Gaussian processes with subject-specific models using  Adaptive Shrinkage Estimation.
+This project implements an adaptive shrinkage estimation framework for personalized deep kernel regression, specifically designed for modeling individual brain trajectories. The method combines population-level deep kernel Gaussian processes with subject-specific models using Adaptive Shrinkage Estimation.
+
+## Problem Description
+
+We address the problem of predicting biomarker trajectories, modeled as a one-dimensional signal spanning multiple years. The prediction framework is defined as follows:
+
+- **Function**: f : U → Y, where:
+  - U ∈ RK (input space)
+  - Y ∈ R (output space)
+
+- **Input Components** (U):
+  - X: Imaging features (145 ROIs)
+  - M: Clinical covariates at subject's first visit (5 covariates)
+  - T: Temporal variable (time in months from first visit)
+
+- **Output** (Y):
+  - Biomarker trajectory (y₀, y₁, ..., yₙ) corresponding to time points (t₀, t₁, ..., tₙ)
 
 ## Installation
 
@@ -36,48 +52,50 @@ pip install -r requirements.txt
 
 ## Dataset Preparation
 
-The pipeline expects a CSV file with the following structure:
+The input data should be a CSV file with the following columns:
 
-```
-PTID,X,Y
-subject1,[feature_vector_1],[target_value_1]
-subject1,[feature_vector_2],[target_value_2]
-subject2,[feature_vector_1],[target_value_1]
-...
-```
+1. **ROI Features** (145 columns):
+   - `ROI_1` to `ROI_145`: Brain region measurements
+   
+2. **Clinical Covariates** (5 columns):
+   - `Covariate1` to `Covariate5`
+   
+3. **Subject and Time Information**:
+   - `PTID`: Subject identifier
+   - `Time`: Time point in months from baseline visit
 
-Where:
-- `PTID`: Subject identifier (string)
-- `X`: Input features (comma-separated values representing the feature vector)
-- `Y`: Target biomarker value (float)
-
-### Data Format Requirements:
-1. Each row represents one observation for a subject
-2. Multiple rows per subject are allowed (longitudinal data)
-3. Features should be preprocessed and normalized
-4. Missing values should be handled before creating the CSV
-
-Example of creating the dataset:
+Example of data preprocessing:
 ```python
 import pandas as pd
 import numpy as np
 
-# Example data structure
-data = {
-    'PTID': ['sub1', 'sub1', 'sub2', 'sub2', 'sub2'],
-    'X': [
-        [1.2, 0.5, -0.3],  # feature vector for sub1, timepoint 1
-        [1.3, 0.6, -0.2],  # feature vector for sub1, timepoint 2
-        [0.8, 0.4, -0.5],  # feature vector for sub2, timepoint 1
-        [0.9, 0.5, -0.4],  # feature vector for sub2, timepoint 2
-        [1.0, 0.6, -0.3],  # feature vector for sub2, timepoint 3
-    ],
-    'Y': [0.5, 0.6, 0.3, 0.4, 0.5]  # biomarker values
-}
+# Read the raw data
+data = pd.read_csv('raw_data.csv')
 
-df = pd.DataFrame(data)
-df.to_csv('data/biomarker_data.csv', index=False)
+# Separate features
+roi_cols = [f'ROI_{i}' for i in range(1, 146)]
+covariate_cols = [f'Covariate{i}' for i in range(1, 6)]
+
+# Create feature vector X by combining ROIs, covariates, and time
+data['X'] = data.apply(
+    lambda row: np.concatenate([
+        row[roi_cols].values,           # ROI features
+        row[covariate_cols].values,     # Clinical covariates
+        [row['Time']]                   # Time point
+    ]),
+    axis=1
+)
+
+# Save processed data
+processed_data = data[['PTID', 'X']].copy()
+processed_data.to_csv('data/biomarker_data.csv', index=False)
 ```
+
+### Data Format Requirements:
+1. All ROI measurements should be preprocessed and normalized
+2. Clinical covariates should be appropriately scaled
+3. Time should be in months, starting from 0 for each subject's first visit
+4. Missing values should be handled before creating the CSV
 
 ## Running the Pipeline
 

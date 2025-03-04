@@ -11,8 +11,8 @@ setup(
         "scikit-learn>=0.24.0",
         "xgboost>=1.5.0",
         "gpytorch>=1.6.0",
-        "pandas>=1.3.0",
-        "matplotlib>=3.4.0",
+        "pandas>=0.25.0,<1.2.0",
+        "matplotlib>=3.0.0,<3.3.0",
     ],
     author="Your Name",
     author_email="your.email@example.com",
@@ -25,5 +25,5 @@ setup(
         "License :: OSI Approved :: MIT License",
         "Operating System :: OS Independent",
     ],
-    python_requires=">=3.8",
+    python_requires=">=3.6",
 ) 
