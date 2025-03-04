@@ -1,4 +1,4 @@
-# Adaptive Shrinkage Deep Kernel Gaussian Process (AS-DKGP)
+# Adaptive Shrinkage Deep Kernel Gaussian Process 
 
 This repository contains the official implementation of the paper:
 
