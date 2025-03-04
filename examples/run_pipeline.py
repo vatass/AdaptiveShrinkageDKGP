@@ -1,5 +1,5 @@
 """
-Complete pipeline for biomarker prediction using Adaptive Shrinkage Deep Kernel GP.
+Complete pipeline for biomarker prediction using Deep Kernel Regression with Adaptive Shrinkage Estimation
 """
 import os
 import numpy as np
@@ -286,6 +286,38 @@ def evaluate_personalization(
     
     return pd.DataFrame(results)
 
+def train_population_dkgp(data_path: str, model_save_path: str, weights_save_path: str):
+    # Load data
+    print("Loading data...")
+    data = pd.read_csv(data_path)
+    input_dim = len(eval(data['X'].iloc[0]))
+
+    # Initialize model
+    print("Initializing model...")
+    model = PopulationDKGP(
+        input_dim=input_dim,
+        hidden_dim=64,
+        feature_dim=32
+    )
+
+    # Train model
+    print("Training model...")
+    metrics = model.fit(
+        train_data=data,
+        roi_idx=13,
+        num_epochs=500,
+        lr=0.01844
+    )
+
+    # Print training results
+    print("\nTraining Results:")
+    for metric, value in metrics.items():
+        print(f"{metric.upper()}: {value:.4f}")
+
+    # Save model
+    print("\nSaving model and weights...")
+    model.save_model(model_save_path, weights_save_path)
+
 def main():
     # Parameters
     data_path = "data/biomarker_data.csv"  # Path to your data file
@@ -340,4 +372,8 @@ def main():
     print(summary)
 
 if __name__ == "__main__":
-    main() 
+    train_population_dkgp(
+        data_path='data/biomarker_data_processed.csv',
+        model_save_path='models/population_dkgp.pt',
+        weights_save_path='models/feature_extractor_weights.pkl'
+    ) 
