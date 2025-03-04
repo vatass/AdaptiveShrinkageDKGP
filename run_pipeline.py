@@ -16,14 +16,15 @@ def load_and_preprocess_data(
     data_path: str,
     train_size: float = 0.6,
     val_size: float = 0.2,
-    random_state: int = 42
+    random_state: int = 42, 
+    target: str = 'ROI_48'
 ) -> Tuple[Dict[str, torch.Tensor], List[str], List[str], List[str]]:
     """Load and preprocess the biomarker data.
     
     Args:
         data_path: Path to the data CSV file
-        train_size: Proportion of data to use for training
-        val_size: Proportion of data to use for validation
+        train_size: Proportion of data to use for training the population model 
+        val_size: Proportion of data to use for training the adaptive shrinkage estimator
         random_state: Random seed
         
     Returns:
@@ -33,10 +34,49 @@ def load_and_preprocess_data(
     
     # Load data
     data = pd.read_csv(data_path)
+
+    subjects = data['PTID'].unique()
+
+    print('Subjects', subjects)
+
+    rois = [f"ROI_{i}" for i in range(1, 146)]
+
+    covariates = [f"Covariate{i}" for i in range(1, 6)]  # Αντικαταστήστε το n με τον αριθμό των συνδιακυμάνσεων
+
+    features = rois + covariates
+
+    print(features)
     
-    # Get unique subject IDs
-    subject_ids = data['PTID'].unique()
+    # Convert the Data to the X,Y, PTID format that is ideal for our problem. 
+    # X should be the ROIs, the Covariates at the first acquisition of the subejct and then the Time the Y should be the ROI Value at time T 
+    samples = {'PTID': [], 'X': [], 'Y': []}
+
+    for i, subject_id in enumerate(subjects):
+
+        subject = data[data['PTID']==subject_id]
+
+        for k in range(0, subject.shape[0]):
+            samples['PTID'].append(subject_id)
     
+            # Baseline Input 
+            x = subject[features].iloc[0].to_list()
+
+            delta = subject['Time'].iloc[k]
+
+            x.extend([delta])
+
+            t = subject[target].iloc[k] #.to_list()
+
+            samples['X'].append(x)
+            samples['Y'].append(t.tolist())
+
+    assert len(samples['PTID']) == len(samples['X'])
+    assert len(samples['X']) == len(samples['Y'])
+
+    samples_df = pd.DataFrame(data=samples)
+
+    subject_ids = samples_df['PTID'].unique()
+
     # First split into train+val and test
     train_val_size = train_size + val_size
     train_val_ids, test_ids = train_test_split(
@@ -58,8 +98,15 @@ def load_and_preprocess_data(
     
     # Extract data for each set
     def extract_data(ids):
-        subset = data[data['PTID'].isin(ids)]
-        x = torch.FloatTensor(subset['X'].values)
+        subset = samples_df[samples_df['PTID'].isin(ids)]
+
+        print(subset)
+
+        print(type(subset['X'].values))
+
+        x_numeric = np.array([np.array(xi, dtype=np.float32) for xi in subset['X'].values])
+
+        x = torch.FloatTensor(x_numeric)
         y = torch.FloatTensor(subset['Y'].values)
         return x, y, subset['PTID'].tolist()
     
@@ -88,9 +135,6 @@ def load_and_preprocess_data(
     print(f'Val Targets: {val_y.shape}')
     print(f'Test Data: {test_x.shape}')
     print(f'Test Targets: {test_y.shape}')
-    
-    sys.exit(0)
-
 
     return {
         'train_x': train_x,
@@ -343,8 +387,6 @@ def main():
     print(summary)
 
 if __name__ == "__main__":
-    train_population_dkgp(
-        data_path='data/biomarker_data_processed.csv',
-        model_save_path='models/population_dkgp.pt',
-        weights_save_path='models/feature_extractor_weights.pkl'
-    ) 
+
+
+    main() 

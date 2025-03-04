@@ -15,6 +15,7 @@ import math
 sns.set_style("white", {'axes.grid' : False})
 from pathlib import Path
 from .base import BaseDeepKernel
+from typing import Dict
 
 
 class PopulationDKGP(BaseDeepKernel):
@@ -194,6 +195,38 @@ def main():
     model.save_model(args.model_save_path, args.weights_save_path)
     
     print(f"\nTotal time elapsed: {time.time() - t0:.2f} seconds")
+
+def train_population_model(
+    data: Dict[str, torch.Tensor],
+    input_dim: int,
+    latent_dim: int,
+    model_save_path: str,
+    device: str = 'cuda' if torch.cuda.is_available() else 'cpu'
+) -> PopulationDKGP:
+    """Train the population DKGP model."""
+    
+    print("Training population DKGP model...")
+    
+    # Δημιουργία του μοντέλου χωρίς τα περιττά ορίσματα
+    model = PopulationDKGP(
+        input_dim=input_dim,
+        hidden_dim=64,  # Μπορείτε να προσαρμόσετε το hidden_dim αν χρειάζεται
+        feature_dim=latent_dim,
+        device=device
+    )
+    
+    # Εκπαίδευση του μοντέλου
+    history = model.fit(
+        train_data=data,  # Χρησιμοποιήστε τα δεδομένα εκπαίδευσης
+        roi_idx=-1,  # Χρησιμοποιήστε το roi_idx αν χρειάζεται
+        num_epochs=500,  # Προσαρμόστε τον αριθμό των εποχών αν χρειάζεται
+        lr=0.01844  # Προσαρμόστε το learning rate αν χρειάζεται
+    )
+    
+    # Αποθήκευση του μοντέλου
+    model.save_model(model_save_path)
+    
+    return model
 
 if __name__ == "__main__":
     main()

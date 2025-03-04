@@ -7,12 +7,11 @@ import sys, os
 from os.path import exists
 from operator import add
 import argparse
-from plotstyle import * 
 import torch
 import gpytorch 
 import numpy as np
 from scipy.optimize import minimize
-import matplotlib.pyplot as plt
+import matplotlib.pyplot as pltmv 
 import torch
 import torch.nn as nn
 import torch.optim as optim

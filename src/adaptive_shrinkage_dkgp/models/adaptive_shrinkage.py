@@ -3,190 +3,190 @@ import pandas as pd
 from xgboost import XGBRegressor
 import argparse
 from sklearn.metrics import mean_absolute_error
-from alpha_models import optimize_alpha_with_subject_simple
+from src.adaptive_shrinkage_dkgp.models.alpha_models import optimize_alpha_with_subject_simple
 
-'''
-In this script we use the validation subjects to train the XGBoost functions 
-'''
+# '''
+# In this script we use the validation subjects to train the XGBoost functions 
+# '''
 
-### CUDA-PYTORCH CHECK ###
-import torch
-print("PyTorch Version:", torch.__version__)
-print("CUDA Version PyTorch Sees:", torch.version.cuda)
-print("cuDNN Version:", torch.backends.cudnn.version())
+# ### CUDA-PYTORCH CHECK ###
+# import torch
+# print("PyTorch Version:", torch.__version__)
+# print("CUDA Version PyTorch Sees:", torch.version.cuda)
+# print("cuDNN Version:", torch.backends.cudnn.version())
 
-### CUDA CHECK ###
-import torch
-print("CUDA Available:", torch.cuda.is_available())
-print("Number of CUDA Devices:", torch.cuda.device_count())
-# print("CUDA Device Name:", torch.cuda.get_device_name(0))
-
-
-gpu_id = 0
-fontsize = 19
-
-parser = argparse.ArgumentParser(description='Alpha-GP Modeling')
-parser.add_argument("--learning_rate", help='Learning Rate', type=float, default=0.01844)   
-parser.add_argument("--datasets", help="GPUs", default='1adniblsa')
-parser.add_argument("--alpha_optim", help='Alpha Optimization Option', default='alpha_simple') # choices are alpha_simple, alpha_aug, alpha_aug2
-parser.add_argument("--alpha_function", help='Alpha Input Space Function', default='predvar') # choices are predvartobs, deviations of pred var with Tobs
+# ### CUDA CHECK ###
+# import torch
+# print("CUDA Available:", torch.cuda.is_available())
+# print("Number of CUDA Devices:", torch.cuda.device_count())
+# # print("CUDA Device Name:", torch.cuda.get_device_name(0))
 
 
-# wandb.init(project="AlphaModeling", entity="vtassop", save_code=True)
+# gpu_id = 0
+# fontsize = 19
 
-## Visualization script for the mixed effects idea for personalization ## 
-resultdir = '/home/cbica/Desktop/LongGPClustering'
+# parser = argparse.ArgumentParser(description='Alpha-GP Modeling')
+# parser.add_argument("--learning_rate", help='Learning Rate', type=float, default=0.01844)   
+# parser.add_argument("--datasets", help="GPUs", default='1adniblsa')
+# parser.add_argument("--alpha_optim", help='Alpha Optimization Option', default='alpha_simple') # choices are alpha_simple, alpha_aug, alpha_aug2
+# parser.add_argument("--alpha_function", help='Alpha Input Space Function', default='predvar') # choices are predvartobs, deviations of pred var with Tobs
 
-args = parser.parse_args()
-lr = args.learning_rate
-datasets = args.datasets
-alpha_optim = args.alpha_optim
-alpha_function = args.alpha_function 
 
-roi_names = ['Right Hippocampus','Right Thalamus Proper', 'Right Lateral Ventricle', 'Left Hippocampus', 'Right Amygdala', 'Left Amygdala', 'Right PHG']
-roi_idxs = [ 13, 23, 17, 14, 4, 5, 109]
-rois_numbers = [ 47, 59, 51]
+# # wandb.init(project="AlphaModeling", entity="vtassop", save_code=True)
 
-longitudinal_covariates = pd.read_csv(resultdir + '/data2/longitudinal_covariates_subjectsamples_longclean_hmuse_convs_adniblsa.csv')
-print(longitudinal_covariates.head(10))
-for c in longitudinal_covariates.columns: 
-    print(c, longitudinal_covariates[c].unique())
+# ## Visualization script for the mixed effects idea for personalization ## 
+# resultdir = '/home/cbica/Desktop/LongGPClustering'
 
-for idx, task in enumerate(roi_idxs): 
+# args = parser.parse_args()
+# lr = args.learning_rate
+# datasets = args.datasets
+# alpha_optim = args.alpha_optim
+# alpha_function = args.alpha_function 
 
-    print('Task', roi_names[idx])
-    pers_s = pd.read_csv('./newneuripsresults/person_ss_singletask_' + str(roi_idxs[idx]) + '_dkgp_population_'+ datasets +'.csv')
-    pers_ss = pers_s[pers_s['model']!='Population']
-    pop = pd.read_csv( './neuripsresults/singletask_' + str(roi_idxs[idx]) + '_dkgp_population_'+ datasets +'.csv')
-    newpop = {'id': [], 'kfold': [], 'score': [], 'lower': [], 'upper': [], 'variance': [], 'y': [], 'history': []}
-    for h in [4, 5, 6, 7]:
-        newpop['id'].extend(pop['id'].tolist())
-        newpop['kfold'].extend(pop['kfold'].tolist())
-        newpop['score'].extend(pop['score'].tolist())
-        newpop['lower'].extend(pop['lower'].tolist())
-        newpop['upper'].extend(pop['upper'].tolist())
-        newpop['variance'].extend(pop['variance'].tolist())
-        newpop['y'].extend(pop['y'].tolist())
-        newpop['history'].extend([h for k in range(len(pop['y'].tolist()))])
+# roi_names = ['Right Hippocampus','Right Thalamus Proper', 'Right Lateral Ventricle', 'Left Hippocampus', 'Right Amygdala', 'Left Amygdala', 'Right PHG']
+# roi_idxs = [ 13, 23, 17, 14, 4, 5, 109]
+# rois_numbers = [ 47, 59, 51]
+
+# longitudinal_covariates = pd.read_csv(resultdir + '/data2/longitudinal_covariates_subjectsamples_longclean_hmuse_convs_adniblsa.csv')
+# print(longitudinal_covariates.head(10))
+# for c in longitudinal_covariates.columns: 
+#     print(c, longitudinal_covariates[c].unique())
+
+# for idx, task in enumerate(roi_idxs): 
+
+#     print('Task', roi_names[idx])
+#     pers_s = pd.read_csv('./newneuripsresults/person_ss_singletask_' + str(roi_idxs[idx]) + '_dkgp_population_'+ datasets +'.csv')
+#     pers_ss = pers_s[pers_s['model']!='Population']
+#     pop = pd.read_csv( './neuripsresults/singletask_' + str(roi_idxs[idx]) + '_dkgp_population_'+ datasets +'.csv')
+#     newpop = {'id': [], 'kfold': [], 'score': [], 'lower': [], 'upper': [], 'variance': [], 'y': [], 'history': []}
+#     for h in [4, 5, 6, 7]:
+#         newpop['id'].extend(pop['id'].tolist())
+#         newpop['kfold'].extend(pop['kfold'].tolist())
+#         newpop['score'].extend(pop['score'].tolist())
+#         newpop['lower'].extend(pop['lower'].tolist())
+#         newpop['upper'].extend(pop['upper'].tolist())
+#         newpop['variance'].extend(pop['variance'].tolist())
+#         newpop['y'].extend(pop['y'].tolist())
+#         newpop['history'].extend([h for k in range(len(pop['y'].tolist()))])
     
-    pop = pd.DataFrame(data=newpop)
-    unique_subjects_ss = list(pers_ss['id'].unique())
+#     pop = pd.DataFrame(data=newpop)
+#     unique_subjects_ss = list(pers_ss['id'].unique())
 
-    #  split unique_subjects_ss into train and test 
-    # This gives me 72 Train Subjects and the rest are for Test the DME-GP
-    validation_subjects = unique_subjects_ss[:int(0.3*len(unique_subjects_ss))]
-    test_subjects = unique_subjects_ss[int(0.3*len(unique_subjects_ss)):]
-    print('Train Subjects', len(validation_subjects))
-    print('Test Subjects', len(test_subjects))
+#     #  split unique_subjects_ss into train and test 
+#     # This gives me 72 Train Subjects and the rest are for Test the DME-GP
+#     validation_subjects = unique_subjects_ss[:int(0.3*len(unique_subjects_ss))]
+#     test_subjects = unique_subjects_ss[int(0.3*len(unique_subjects_ss)):]
+#     print('Train Subjects', len(validation_subjects))
+#     print('Test Subjects', len(test_subjects))
 
-    #### Alphas Dataset Creation ####
-    ### Create it on the unseen information ###
-    y_ss_list, y_p_list, V_ss_list,V_pp_list, Tobs_list, corr_ids_list = [], [], [], [], [], [] 
-    y_list = [] 
+#     #### Alphas Dataset Creation ####
+#     ### Create it on the unseen information ###
+#     y_ss_list, y_p_list, V_ss_list,V_pp_list, Tobs_list, corr_ids_list = [], [], [], [], [], [] 
+#     y_list = [] 
 
-    X, Y_simple, Y_aug, Y_aug2 = [], [], [], []
+#     X, Y_simple, Y_aug, Y_aug2 = [], [], [], []
 
-    df_alphas_within = {'id': [], 'alpha_simple': [], 'alpha_aug': [], 'alpha_aug2': [], 'y_ss': [], 'y_pp': [], 'y': [], 'V_ss': [], 'V_pp': [], 'Tobs': []}
+#     df_alphas_within = {'id': [], 'alpha_simple': [], 'alpha_aug': [], 'alpha_aug2': [], 'y_ss': [], 'y_pp': [], 'y': [], 'V_ss': [], 'V_pp': [], 'Tobs': []}
 
-    for val_subject in validation_subjects: 
+#     for val_subject in validation_subjects: 
 
-        pers_ss_sub = pers_ss[pers_ss['id'] == val_subject]
-        pop_sub = pop[pop['id'] == val_subject]
+#         pers_ss_sub = pers_ss[pers_ss['id'] == val_subject]
+#         pop_sub = pop[pop['id'] == val_subject]
 
-        for h in [4,5,6,7]:
-            pers_ss_sub_h = pers_ss_sub[pers_ss_sub['history_points'] == h]
-            pop_sub_h = pop_sub[pop_sub['history'] == h]
-            y_ss_list.extend(pers_ss_sub_h['score'].tolist())
-            y_p_list.extend(pop_sub_h['score'].tolist())
-            y_list.extend(pers_ss_sub_h['y'].tolist())
-            V_ss_list.extend(pers_ss_sub_h['variance'].tolist())
-            V_pp_list.extend(pop_sub_h['variance'].tolist())
+#         for h in [4,5,6,7]:
+#             pers_ss_sub_h = pers_ss_sub[pers_ss_sub['history_points'] == h]
+#             pop_sub_h = pop_sub[pop_sub['history'] == h]
+#             y_ss_list.extend(pers_ss_sub_h['score'].tolist())
+#             y_p_list.extend(pop_sub_h['score'].tolist())
+#             y_list.extend(pers_ss_sub_h['y'].tolist())
+#             V_ss_list.extend(pers_ss_sub_h['variance'].tolist())
+#             V_pp_list.extend(pop_sub_h['variance'].tolist())
             
-            ### Time of observation ###
-            Tobs = pers_ss_sub_h['time'].tolist()[h-1]
-            ## Populate this for all the samples in the trajectory 
-            Tobs_list_within = [Tobs for k in range(len(pers_ss_sub_h['score'].tolist()))]
-            Tobs_list.extend(Tobs_list_within)
-            # store the validation subject id 
-            corr_ids_list.extend(pers_ss_sub_h['id'].tolist()) 
+#             ### Time of observation ###
+#             Tobs = pers_ss_sub_h['time'].tolist()[h-1]
+#             ## Populate this for all the samples in the trajectory 
+#             Tobs_list_within = [Tobs for k in range(len(pers_ss_sub_h['score'].tolist()))]
+#             Tobs_list.extend(Tobs_list_within)
+#             # store the validation subject id 
+#             corr_ids_list.extend(pers_ss_sub_h['id'].tolist()) 
 
-            y_ss = pers_ss_sub_h['score'].tolist()
-            y_p = pop_sub_h['score'].tolist()
-            y = pers_ss_sub_h['y'].tolist()
-            V_ss = pers_ss_sub_h['variance'].tolist()
-            V_pp = pop_sub_h['variance'].tolist()
+#             y_ss = pers_ss_sub_h['score'].tolist()
+#             y_p = pop_sub_h['score'].tolist()
+#             y = pers_ss_sub_h['y'].tolist()
+#             V_ss = pers_ss_sub_h['variance'].tolist()
+#             V_pp = pop_sub_h['variance'].tolist()
 
-            y_arr = np.array(y)
-            y_ss_arr = np.array(y_ss)
-            y_pp_arr = np.array(y_p)
-            V_ss_arr = np.array(V_ss)
-            V_pp_arr = np.array(V_pp)
-            Tobs = np.array(Tobs_list)
+#             y_arr = np.array(y)
+#             y_ss_arr = np.array(y_ss)
+#             y_pp_arr = np.array(y_p)
+#             V_ss_arr = np.array(V_ss)
+#             V_pp_arr = np.array(V_pp)
+#             Tobs = np.array(Tobs_list)
 
-            ## I want to stack in the X array the y_ss, y_pp, V_ss, V_pp, Tobs
-            Xarr = np.array([y_ss_arr, y_pp_arr, V_ss_arr, V_pp_arr, Tobs]).T
-            X.append(Xarr)
+#             ## I want to stack in the X array the y_ss, y_pp, V_ss, V_pp, Tobs
+#             Xarr = np.array([y_ss_arr, y_pp_arr, V_ss_arr, V_pp_arr, Tobs]).T
+#             X.append(Xarr)
 
-            alphas_simple =  optimize_alpha_with_subject_simple(y_arr, y_pp_arr, y_ss_arr)
+#             alphas_simple =  optimize_alpha_with_subject_simple(y_arr, y_pp_arr, y_ss_arr)
   
-            Y_simple.append(alphas_simple)
+#             Y_simple.append(alphas_simple)
 
 
-            df_alphas_within['id'].extend([val_subject for k in range(len(y_ss_arr))])
-            df_alphas_within['alpha_simple'].extend([alphas_simple for k in range(len(y_ss_arr))])
-            df_alphas_within['y_ss'].extend(y_ss_arr)
-            df_alphas_within['y_pp'].extend(y_pp_arr)
-            df_alphas_within['y'].extend(y_arr)
-            df_alphas_within['V_ss'].extend(V_ss_arr)
-            df_alphas_within['V_pp'].extend(V_pp_arr)
-            df_alphas_within['Tobs'].extend(Tobs_list_within)
+#             df_alphas_within['id'].extend([val_subject for k in range(len(y_ss_arr))])
+#             df_alphas_within['alpha_simple'].extend([alphas_simple for k in range(len(y_ss_arr))])
+#             df_alphas_within['y_ss'].extend(y_ss_arr)
+#             df_alphas_within['y_pp'].extend(y_pp_arr)
+#             df_alphas_within['y'].extend(y_arr)
+#             df_alphas_within['V_ss'].extend(V_ss_arr)
+#             df_alphas_within['V_pp'].extend(V_pp_arr)
+#             df_alphas_within['Tobs'].extend(Tobs_list_within)
 
-    X_within = np.array(X)
-    Y_simple = np.array(Y_simple)
+#     X_within = np.array(X)
+#     Y_simple = np.array(Y_simple)
 
-    print(X_within.shape)
+#     print(X_within.shape)
 
-    df_alphas_within = pd.DataFrame(df_alphas_within)
-    # store it to csv
-    df_alphas_within.to_csv('./neuripsresults/alphas_comparison_within_'+ str(roi_idxs[idx]) + '_'+ datasets +'.csv')
+#     df_alphas_within = pd.DataFrame(df_alphas_within)
+#     # store it to csv
+#     df_alphas_within.to_csv('./neuripsresults/alphas_comparison_within_'+ str(roi_idxs[idx]) + '_'+ datasets +'.csv')
 
-    X = X_within
-    Y = Y_simple
+#     X = X_within
+#     Y = Y_simple
    
-    # Define the features and target
-    features = ['y_ss', 'y_pp', 'V_ss', 'V_pp', 'Tobs']
-    target = alpha_optim  # assuming the target column name is the same as t_type
+#     # Define the features and target
+#     features = ['y_ss', 'y_pp', 'V_ss', 'V_pp', 'Tobs']
+#     target = alpha_optim  # assuming the target column name is the same as t_type
 
-    X = df_alphas_within[features]
-    Y = df_alphas_within[target]
+#     X = df_alphas_within[features]
+#     Y = df_alphas_within[target]
 
-    ### Keep Held Out Rows for  Alpha Model Testing ###
-    X_train = X[:int(0.9*len(X))]
-    y_train = Y[:int(0.9*len(Y))]
-    X_test = X[int(0.9*len(X)):]
-    y_test = Y[int(0.9*len(Y)):]
-    print(X_train.shape, y_train.shape, X_test.shape, y_test.shape)
-
-
-    xgb_model = XGBRegressor(n_estimators=100, random_state=42)
-    xgb_model.fit(X_train, y_train)
-
-        # Save the model to a file
-    xgb_model.save_model('xgb_model.json')
-
-    # Create a new model instance and load the model from the file
-    loaded_model = XGBRegressor()
-    loaded_model.load_model('xgb_model.json')
-
-    # Use the loaded model for predictions on the test set
-    test_predictions = loaded_model.predict(X_test)
-    test_mae = mean_absolute_error(y_test, test_predictions)
-    print('XGBOOST MAE:', test_mae)
-
-    xgb_model.save_model('./xgb_model_'+ str(alpha_optim) + '_' + str(roi_idxs[idx]) + '.json')
+#     ### Keep Held Out Rows for  Alpha Model Testing ###
+#     X_train = X[:int(0.9*len(X))]
+#     y_train = Y[:int(0.9*len(Y))]
+#     X_test = X[int(0.9*len(X)):]
+#     y_test = Y[int(0.9*len(Y)):]
+#     print(X_train.shape, y_train.shape, X_test.shape, y_test.shape)
 
 
-print('Alpha XGB Training Completed!')
+#     xgb_model = XGBRegressor(n_estimators=100, random_state=42)
+#     xgb_model.fit(X_train, y_train)
+
+#         # Save the model to a file
+#     xgb_model.save_model('xgb_model.json')
+
+#     # Create a new model instance and load the model from the file
+#     loaded_model = XGBRegressor()
+#     loaded_model.load_model('xgb_model.json')
+
+#     # Use the loaded model for predictions on the test set
+#     test_predictions = loaded_model.predict(X_test)
+#     test_mae = mean_absolute_error(y_test, test_predictions)
+#     print('XGBOOST MAE:', test_mae)
+
+#     xgb_model.save_model('./xgb_model_'+ str(alpha_optim) + '_' + str(roi_idxs[idx]) + '.json')
+
+
+# print('Alpha XGB Training Completed!')
 
 """
 Adaptive Shrinkage Estimator for combining population and subject-specific predictions.
