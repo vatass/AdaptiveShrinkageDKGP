@@ -3,7 +3,7 @@ import pandas as pd
 from xgboost import XGBRegressor
 import argparse
 from sklearn.metrics import mean_absolute_error
-from alpha_models import optimize_alpha_with_subject_simple, optimize_alpha_with_subject_aug, optimize_alpha_with_subject_aug2
+from alpha_models import optimize_alpha_with_subject_simple
 
 '''
 In this script we use the validation subjects to train the XGBoost functions 
