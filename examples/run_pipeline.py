@@ -89,6 +89,9 @@ def load_and_preprocess_data(
     print(f'Test Data: {test_x.shape}')
     print(f'Test Targets: {test_y.shape}')
     
+    sys.exit(0)
+
+
     return {
         'train_x': train_x,
         'train_y': train_y,
