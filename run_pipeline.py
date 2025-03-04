@@ -8,9 +8,9 @@ import pandas as pd
 from sklearn.model_selection import train_test_split
 from typing import Tuple, Dict, List
 
-from adaptive_shrinkage_dkgp.models.population_dkgp import PopulationDKGP
-from adaptive_shrinkage_dkgp.models.ss_dkgp import SubjectSpecificDKGP
-from adaptive_shrinkage_dkgp.models.adaptive_shrinkage import AdaptiveShrinkage
+from src.adaptive_shrinkage_dkgp.models.population_dkgp import PopulationDKGP
+from src.adaptive_shrinkage_dkgp.models.ss_dkgp import SubjectSpecificDKGP
+from src.adaptive_shrinkage_dkgp.models.adaptive_shrinkage import AdaptiveShrinkage
 
 def load_and_preprocess_data(
     data_path: str,
