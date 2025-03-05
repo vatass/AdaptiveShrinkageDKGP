@@ -126,7 +126,6 @@ class BaseDeepKernel(ExactGP):
         for i in range(len(dims)-1):
             layers.extend([
                 nn.Linear(dims[i], dims[i+1]),
-                getattr(nn, activation.upper())(),
                 nn.Dropout(dropout)
             ])
         
@@ -177,5 +176,104 @@ class BaseDeepKernel(ExactGP):
                 std = posterior.stddev
                 return mean, std
             return mean
+
+
+
+class SingleTaskDeepKernel(gpytorch.models.ExactGP): 
+    def __init__(self, input_dim, train_x, train_y, likelihood, depth, dropout, activation, pretrained,latent_dim, feature_extractor, gphyper, kernel_choice='RBF', mean='CONSTANT'):
+        super(SingleTaskDeepKernel, self).__init__(train_x, train_y, likelihood)
+        self.likelihood = likelihood
+        self.mean_module = gpytorch.means.LinearMean(input_size=latent_dim)
+        # self.mean_module = gpytorch.means.ConstantMean()
+        self.covar_module = gpytorch.kernels.ScaleKernel(gpytorch.kernels.RBFKernel(ard_num_dims=latent_dim))
+
+        self.pretrained = pretrained
+
+        if not pretrained: 
+            self.feature_extractor = LargeFeatureExtractor(datadim=input_dim, depth=depth, dr=dropout, activ=activation)
+        else: 
+            self.feature_extractor = feature_extractor
+        # This module will scale the NN features so that they're nice values
+        self.scale_to_bounds = gpytorch.utils.grid.ScaleToBounds(-1., 1.)
+
+        if gphyper is not None: 
+            self.initialize(**gphyper)
+
+
+    def forward(self, x):
+        # We're first putting our data through a deep net (feature extractor)
+        projected_x = self.feature_extractor(x)
+        projected_x = self.scale_to_bounds(projected_x)  # Make the NN values "nice"
+
+
+        if self.pretrained:
+            projected_x = projected_x.detach()
+
+        mean_x = self.mean_module(projected_x)
+        covar_x = self.covar_module(projected_x)
+
+        return gpytorch.distributions.MultivariateNormal(mean_x, covar_x)
+
+
+class PopulationDKGP(BaseDeepKernel):
+    def __init__(self, input_dim, hidden_dim=64, feature_dim=32, device='cuda' if torch.cuda.is_available() else 'cpu'):
+        super(PopulationDKGP, self).__init__(
+            train_x=None,  # Placeholder, should be set during training
+            train_y=None,  # Placeholder, should be set during training
+            likelihood=gpytorch.likelihoods.GaussianLikelihood(),
+            input_dim=input_dim,
+            latent_dim=feature_dim
+        )
+        self.device = device
+        self.hidden_dim = hidden_dim
+        self.feature_dim = feature_dim
+        
+        # Initialize model components
+        self.likelihood = self.likelihood.to(device)
+        
+        # Initialize the model attribute
+        self.model = SingleTaskDeepKernel(
+            input_dim=input_dim,
+            train_x=None,  # Placeholder, should be set during training
+            train_y=None,  # Placeholder, should be set during training
+            likelihood=self.likelihood,
+            depth=2,  # Adjust depth as needed
+            dropout=0.1,  # Adjust dropout as needed
+            activation='relu',  # Adjust activation as needed
+            pretrained=False,  # Adjust based on your needs
+            latent_dim=feature_dim,
+            feature_extractor=None,  # Adjust based on your needs
+            gphyper=None  # Adjust based on your needs
+        ).to(device)
+
+
+class LargeFeatureExtractor(torch.nn.Sequential):
+    def __init__(self, datadim, depth, dr, activ):
+        super(LargeFeatureExtractor, self).__init__()
+
+        # Deep Kernel Architecture
+        self.datadim = datadim
+        self.depth = depth
+        self.activation_function = activ
+        self.droupout_rate = dr
+        print('depth', depth)
+        final_layer = depth[-1]
+        print('final layer', final_layer)
+
+        for i, d in enumerate(self.depth[:-1]):
+            dim1, dim2 = d
+            self.add_module(f'linear{i+1}', torch.nn.Linear(dim1, dim2))
+            if self.activation_function == 'relu':
+                self.add_module(f'activ{i+1}', torch.nn.ReLU())
+            elif self.activation_function == 'leakyr':
+                self.add_module(f'activ{i+1}', torch.nn.LeakyReLU())
+            elif self.activation_function == 'prelu':
+                self.add_module(f'activ{i+1}', torch.nn.PReLU())
+            elif self.activation_function == 'selu':
+                self.add_module(f'activ{i+1}', torch.nn.SELU())
+
+        print('Final Layer', final_layer[0], final_layer[1])
+        self.add_module('final_linear', torch.nn.Linear(int(final_layer[0]), int(final_layer[1])))
+        self.add_module('dr1', torch.nn.Dropout(self.droupout_rate))
 
 

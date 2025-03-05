@@ -4,7 +4,6 @@ import sys
 import torch
 import gpytorch
 import pickle
-from .single_task_deep_kernel import SingleTaskDeepKernel
 import argparse
 import matplotlib.pyplot as plt 
 import seaborn as sns 
@@ -14,15 +13,50 @@ import json
 import math 
 sns.set_style("white", {'axes.grid' : False})
 from pathlib import Path
-from .base import BaseDeepKernel
+from .base import BaseDeepKernel, LargeFeatureExtractor
 from typing import Dict
 
 
+class SingleTaskDeepKernel(gpytorch.models.ExactGP): 
+    def __init__(self, input_dim, train_x, train_y, likelihood, depth, dropout, activation, pretrained,latent_dim, feature_extractor, gphyper, kernel_choice='RBF', mean='CONSTANT'):
+        super(SingleTaskDeepKernel, self).__init__(train_x, train_y, likelihood)
+        self.likelihood = likelihood
+        self.mean_module = gpytorch.means.LinearMean(input_size=latent_dim)
+        # self.mean_module = gpytorch.means.ConstantMean()
+        self.covar_module = gpytorch.kernels.ScaleKernel(gpytorch.kernels.RBFKernel(ard_num_dims=latent_dim))
+
+        self.pretrained = pretrained
+
+        if not pretrained: 
+            self.feature_extractor = LargeFeatureExtractor(datadim=input_dim, depth=depth, dr=dropout, activ=activation)
+        else: 
+            self.feature_extractor = feature_extractor
+        # This module will scale the NN features so that they're nice values
+        self.scale_to_bounds = gpytorch.utils.grid.ScaleToBounds(-1., 1.)
+
+        if gphyper is not None: 
+            self.initialize(**gphyper)
+
+
+    def forward(self, x):
+        # We're first putting our data through a deep net (feature extractor)
+        projected_x = self.feature_extractor(x)
+        projected_x = self.scale_to_bounds(projected_x)  # Make the NN values "nice"
+
+
+        if self.pretrained:
+            projected_x = projected_x.detach()
+
+        mean_x = self.mean_module(projected_x)
+        covar_x = self.covar_module(projected_x)
+
+        return gpytorch.distributions.MultivariateNormal(mean_x, covar_x)
+
 class PopulationDKGP(BaseDeepKernel):
-    def __init__(self, input_dim, hidden_dim=64, feature_dim=32, device='cuda' if torch.cuda.is_available() else 'cpu'):
+    def __init__(self, train_x, train_y, input_dim, hidden_dim=64, feature_dim=32, device='cuda' if torch.cuda.is_available() else 'cpu'):
         super(PopulationDKGP, self).__init__(
-            train_x=None,  # Placeholder, should be set during training
-            train_y=None,  # Placeholder, should be set during training
+            train_x=train_x,
+            train_y=train_y,
             likelihood=gpytorch.likelihoods.GaussianLikelihood(),
             input_dim=input_dim,
             latent_dim=feature_dim
@@ -33,12 +67,28 @@ class PopulationDKGP(BaseDeepKernel):
         
         # Initialize model components
         self.likelihood = self.likelihood.to(device)
-        self.model = self.model.to(device)
+        
+        # Initialize the model attribute
+        self.model = SingleTaskDeepKernel(
+            input_dim=input_dim,
+            train_x=train_x,
+            train_y=train_y,
+            likelihood=self.likelihood,
+            depth = [(train_x.shape[1], int(train_x.shape[1]/2) )], 
+            dropout=0.1,  # Adjust dropout as needed
+            activation='relu',  # Adjust activation as needed
+            pretrained=False,  # Adjust based on your needs
+            latent_dim=feature_dim,
+            feature_extractor=None,  # Adjust based on your needs
+            gphyper=None  # Adjust based on your needs
+        ).to(device)
 
     def process_data(self, data, roi_idx=-1):
         """Process input data and move to device."""
-        X = torch.tensor(np.stack(data['X'].values), dtype=torch.float32)
-        y = torch.tensor(data['Y'].values, dtype=torch.float32)
+        # Υποθέτουμε ότι το data είναι ήδη torch.Tensor
+
+        X = data['train_x']  # Ή 'val_x' ή 'test_x' ανάλογα με το σύνολο δεδομένων
+        y = data['train_y']  # Ή 'val_y' ή 'test_y' ανάλογα με το σύνολο δεδομένων
         
         if roi_idx != -1:
             y = y[:, roi_idx]
@@ -48,7 +98,7 @@ class PopulationDKGP(BaseDeepKernel):
 
     def fit(self, train_data, roi_idx=-1, num_epochs=500, lr=0.01844, weight_decay=0.01):
         """Train the population model."""
-        X_train, y_train = self.process_data(train_data, roi_train)
+        X_train, y_train = self.process_data(train_data, roi_idx)
         
         # Set to training mode
         self.model.train()
@@ -118,7 +168,10 @@ class PopulationDKGP(BaseDeepKernel):
 
     def predict(self, test_data, roi_idx=-1):
         """Make predictions with uncertainty."""
-        X_test, _ = self.process_data(test_data, roi_test)
+
+        print('test_data', test_data.shape)
+
+        X_test = test_data
         
         self.model.eval()
         self.likelihood.eval()
@@ -127,9 +180,13 @@ class PopulationDKGP(BaseDeepKernel):
             observed_pred = self.likelihood(self.model(X_test))
             mean = observed_pred.mean
             lower, upper = observed_pred.confidence_region()
-        
+            variance = observed_pred.variance
         # Move predictions to CPU
-        return mean.cpu().numpy(), lower.cpu().numpy(), upper.cpu().numpy()
+        print('mean shape:', mean.shape)
+        print('lower shape:', lower.shape)
+        print('upper shape:', upper.shape)
+        print('variance shape:', variance.shape)
+        return mean.cpu().numpy(), lower.cpu().numpy(), upper.cpu().numpy(), variance.cpu().numpy()
 
     def save_model(self, model_path, weights_path):
         """Save model and feature extractor weights."""
@@ -140,7 +197,7 @@ class PopulationDKGP(BaseDeepKernel):
         }, model_path)
         
         # Save feature extractor weights separately
-        feature_extractor_weights = self.model.feature_extractor.state_dict()
+        feature_extractor_weights = {k: v for k, v in self.model.feature_extractor.state_dict().items()}
         with open(weights_path, 'wb') as f:
             pickle.dump(feature_extractor_weights, f)
 
@@ -149,6 +206,73 @@ class PopulationDKGP(BaseDeepKernel):
         checkpoint = torch.load(model_path, map_location=self.device)
         self.model.load_state_dict(checkpoint['model_state_dict'])
         self.likelihood.load_state_dict(checkpoint['likelihood_state_dict'])
+
+    def get_deep_params(self):
+        """Get deep kernel parameters including only feature extractor."""
+        feature_extractor_params = {}
+        for param_name, param in self.model.named_parameters():
+            if param_name.startswith('feature_extractor'):
+                feature_extractor_params[param_name] = param
+        print(feature_extractor_params)
+        return feature_extractor_params
+
+
+def train_population_model(
+    data: Dict[str, torch.Tensor],
+    input_dim: int,
+    latent_dim: int,
+    model_save_path: str,
+    device: str = 'cuda' if torch.cuda.is_available() else 'cpu'
+) -> PopulationDKGP:
+    """Train the population DKGP model."""
+    
+    print("Training population DKGP model...")
+    
+    # Δημιουργία του μοντέλου χωρίς τα περιττά ορίσματα
+    model = PopulationDKGP(
+        train_x=data['train_x'],
+        train_y=data['train_y'],
+        input_dim=input_dim,
+        hidden_dim=64,  # Μπορείτε να προσαρμόσετε το hidden_dim αν χρειάζεται
+        feature_dim=latent_dim,
+        device=device
+    )
+    
+    # Εκπαίδευση του μοντέλου
+    history = model.fit(
+        train_data=data,  # Χρησιμοποιήστε τα δεδομένα εκπαίδευσης
+        roi_idx=-1,  # Χρησιμοποιήστε το roi_idx αν χρειάζεται
+        num_epochs=500,  # Προσαρμόστε τον αριθμό των εποχών αν χρειάζεται
+        lr=0.01844  # Προσαρμόστε το learning rate αν χρειάζεται
+    )
+    
+    # Αποθήκευση του μοντέλου
+    model.save_model(model_save_path)
+    
+    return model
+
+def mae(y_true, y_pred):
+    return np.mean(np.abs(y_true - y_pred)), np.abs(y_true - y_pred)
+
+def mse(y_true, y_pred):
+    se = (y_true - y_pred) ** 2
+    mse_value = np.mean(se)
+    rmse_value = np.sqrt(mse_value)
+    return mse_value, rmse_value, se
+
+def R2(y_true, y_pred):
+    ss_res = np.sum((y_true - y_pred) ** 2)
+    ss_tot = np.sum((y_true - np.mean(y_true)) ** 2)
+    return 1 - (ss_res / ss_tot)
+
+def calc_coverage(predictions, groundtruth, intervals):
+    lower, upper = intervals
+    coverage = (groundtruth >= lower) & (groundtruth <= upper)
+    interval_width = upper - lower
+    mean_coverage = np.mean(coverage)
+    mean_interval_width = np.mean(interval_width)
+    return coverage.astype(int), interval_width, mean_coverage, mean_interval_width
+
 
 def main():
     parser = argparse.ArgumentParser(description='Train Population DKGP Model')
@@ -171,10 +295,13 @@ def main():
     # Initialize and train model
     print("Initializing model...")
     model = PopulationDKGP(
+        train_x=data['train_x'],
+        train_y=data['train_y'],
         input_dim=input_dim,
         hidden_dim=args.hidden_dim,
         feature_dim=args.feature_dim
     )
+
 
     print("Training model...")
     t0 = time.time()
@@ -195,38 +322,6 @@ def main():
     model.save_model(args.model_save_path, args.weights_save_path)
     
     print(f"\nTotal time elapsed: {time.time() - t0:.2f} seconds")
-
-def train_population_model(
-    data: Dict[str, torch.Tensor],
-    input_dim: int,
-    latent_dim: int,
-    model_save_path: str,
-    device: str = 'cuda' if torch.cuda.is_available() else 'cpu'
-) -> PopulationDKGP:
-    """Train the population DKGP model."""
-    
-    print("Training population DKGP model...")
-    
-    # Δημιουργία του μοντέλου χωρίς τα περιττά ορίσματα
-    model = PopulationDKGP(
-        input_dim=input_dim,
-        hidden_dim=64,  # Μπορείτε να προσαρμόσετε το hidden_dim αν χρειάζεται
-        feature_dim=latent_dim,
-        device=device
-    )
-    
-    # Εκπαίδευση του μοντέλου
-    history = model.fit(
-        train_data=data,  # Χρησιμοποιήστε τα δεδομένα εκπαίδευσης
-        roi_idx=-1,  # Χρησιμοποιήστε το roi_idx αν χρειάζεται
-        num_epochs=500,  # Προσαρμόστε τον αριθμό των εποχών αν χρειάζεται
-        lr=0.01844  # Προσαρμόστε το learning rate αν χρειάζεται
-    )
-    
-    # Αποθήκευση του μοντέλου
-    model.save_model(model_save_path)
-    
-    return model
 
 if __name__ == "__main__":
     main()

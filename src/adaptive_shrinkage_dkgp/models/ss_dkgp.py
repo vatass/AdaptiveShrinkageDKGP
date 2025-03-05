@@ -4,7 +4,7 @@ Subject-Specific Deep Kernel Gaussian Process model.
 from typing import Dict, Optional, Tuple, Union
 import torch
 import gpytorch
-from .base import BaseDeepKernel
+from .base import BaseDeepKernel, LargeFeatureExtractor
 
 class SubjectSpecificDKGP(BaseDeepKernel):
     """Subject-Specific Deep Kernel Gaussian Process model.
@@ -12,7 +12,7 @@ class SubjectSpecificDKGP(BaseDeepKernel):
     This model is initialized with parameters from a population model
     and fine-tuned on subject-specific data.
     """
-    
+
     def __init__(
         self,
         train_x: torch.Tensor,
@@ -26,6 +26,7 @@ class SubjectSpecificDKGP(BaseDeepKernel):
         kernel: str = 'RBF',
         mean: str = 'constant',
         learning_rate: float = 0.01,
+        weight_decay: float = 0.01,
         n_epochs: int = 100,
         device: str = 'cuda' if torch.cuda.is_available() else 'cpu'
     ) -> None:
@@ -62,9 +63,18 @@ class SubjectSpecificDKGP(BaseDeepKernel):
             mean=mean
         )
         
-        # Load population parameters if provided
+        # Ensure consistent layer naming
+        self.feature_extractor = LargeFeatureExtractor(
+            datadim=input_dim,
+            depth=[(input_dim, int(input_dim/2))],  # Adjust depth as needed
+            dr=dropout,
+            activ=activation
+        )
+        
+
         if population_params is not None:
-            self.feature_extractor.load_state_dict(population_params)
+            adjusted_population_params = {k.replace('feature_extractor.', ''): v for k, v in population_params.items()}
+            self.feature_extractor.load_state_dict(adjusted_population_params)
             # Freeze feature extractor parameters
             for param in self.feature_extractor.parameters():
                 param.requires_grad = False
@@ -100,7 +110,7 @@ class SubjectSpecificDKGP(BaseDeepKernel):
             {'params': self.covar_module.parameters(), 'lr': self.learning_rate},
             {'params': self.mean_module.parameters(), 'lr': self.learning_rate},
             {'params': self.likelihood.parameters(), 'lr': self.learning_rate}
-        ])
+        ], weight_decay=weight_decay)
         
         mll = gpytorch.mlls.ExactMarginalLogLikelihood(self.likelihood, self)
         
@@ -108,6 +118,8 @@ class SubjectSpecificDKGP(BaseDeepKernel):
             'train_loss': [],
             'val_loss': [] if val_x is not None else None
         }
+        
+        print(f'Starting training for {self.n_epochs} epochs with learning rate {self.learning_rate}')
         
         for epoch in range(self.n_epochs):
             optimizer.zero_grad()
@@ -124,8 +136,11 @@ class SubjectSpecificDKGP(BaseDeepKernel):
                     val_loss = -mll(val_output, val_y)
                     history['val_loss'].append(val_loss.item())
             
-            if verbose and (epoch + 1) % 20 == 0:
-                print(f'Epoch {epoch+1}/{self.n_epochs} - Loss: {loss.item():.4f}')
+            if verbose:
+                print(f'Epoch {epoch+1}/{self.n_epochs} - Training Loss: {loss.item():.4f}')
+            
+            if val_x is not None and verbose:
+                print(f'Epoch {epoch+1}/{self.n_epochs} - Validation Loss: {val_loss.item():.4f}')
         
         return history
     

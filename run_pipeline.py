@@ -7,6 +7,8 @@ import torch
 import pandas as pd
 from sklearn.model_selection import train_test_split
 from typing import Tuple, Dict, List
+import pickle
+import matplotlib.pyplot as plt
 
 from src.adaptive_shrinkage_dkgp.models.population_dkgp import PopulationDKGP
 from src.adaptive_shrinkage_dkgp.models.ss_dkgp import SubjectSpecificDKGP
@@ -37,7 +39,7 @@ def load_and_preprocess_data(
 
     subjects = data['PTID'].unique()
 
-    print('Subjects', subjects)
+    # print('Subjects', subjects)
 
     rois = [f"ROI_{i}" for i in range(1, 146)]
 
@@ -45,7 +47,7 @@ def load_and_preprocess_data(
 
     features = rois + covariates
 
-    print(features)
+    # print(features)
     
     # Convert the Data to the X,Y, PTID format that is ideal for our problem. 
     # X should be the ROIs, the Covariates at the first acquisition of the subejct and then the Time the Y should be the ROI Value at time T 
@@ -136,6 +138,8 @@ def load_and_preprocess_data(
     print(f'Test Data: {test_x.shape}')
     print(f'Test Targets: {test_y.shape}')
 
+    print("Data loading and preprocessing completed.")
+
     return {
         'train_x': train_x,
         'train_y': train_y,
@@ -150,6 +154,7 @@ def train_population_model(
     input_dim: int,
     latent_dim: int,
     model_save_path: str,
+    weights_save_path: str,
     device: str = 'cuda' if torch.cuda.is_available() else 'cpu'
 ) -> PopulationDKGP:
     """Train the population DKGP model.
@@ -159,6 +164,7 @@ def train_population_model(
         input_dim: Input dimension
         latent_dim: Latent dimension
         model_save_path: Path to save the model
+        weights_save_path: Path to save the weights
         device: Device to run the model on
         
     Returns:
@@ -170,27 +176,29 @@ def train_population_model(
         train_x=data['train_x'],
         train_y=data['train_y'],
         input_dim=input_dim,
-        latent_dim=latent_dim,
+        hidden_dim=64,  # Μπορείτε να προσαρμόσετε το hidden_dim αν χρειάζεται
+        feature_dim=latent_dim,
         device=device
     )
     
     history = model.fit(
-        train_x=data['train_x'],
-        train_y=data['train_y'],
-        val_x=data['val_x'],
-        val_y=data['val_y'],
-        verbose=True
+        train_data=data,  # Χρησιμοποιήστε τα δεδομένα εκπαίδευσης
+        roi_idx=-1,  # Χρησιμοποιήστε το roi_idx αν χρειάζεται
+        num_epochs=500,  # Προσαρμόστε τον αριθμό των εποχών αν χρειάζεται
+        lr=0.01844  # Προσαρμόστε το learning rate αν χρειάζεται
     )
     
     # Save model
-    model.save_model(model_save_path)
+    print("\nSaving model and weights...")
+    model.save_model(model_save_path, weights_save_path)
     
     return model
 
 def train_adaptive_shrinkage(
     pop_model: PopulationDKGP,
     data: Dict[str, torch.Tensor],
-    model_save_path: str
+    model_save_path: str,
+    weights_save_path: str
 ) -> AdaptiveShrinkage:
     """Train the adaptive shrinkage estimator.
     
@@ -198,15 +206,14 @@ def train_adaptive_shrinkage(
         pop_model: Trained population model
         data: Dictionary containing data tensors
         model_save_path: Path to save the model
-        
     Returns:
         Trained adaptive shrinkage model
     """
     print("Training adaptive shrinkage estimator...")
     
-    # Get population model predictions
-    pop_mean, pop_std = pop_model.predict(data['val_x'])
-    
+
+    pop_mean, pop_lower, pop_upper, pop_variance = pop_model.predict(data['val_x'])
+
     # Initialize and train subject-specific models for validation subjects
     ss_means = []
     ss_stds = []
@@ -216,7 +223,8 @@ def train_adaptive_shrinkage(
         # Get subject data up to current observation
         x_sub = data['val_x'][:i+1]
         y_sub = data['val_y'][:i+1]
-        
+        print('x_sub', x_sub.shape)
+        print('y_sub', y_sub.shape)
         # Train subject-specific model
         ss_model = SubjectSpecificDKGP(
             train_x=x_sub,
@@ -236,6 +244,8 @@ def train_adaptive_shrinkage(
     ss_means = torch.cat(ss_means)
     ss_stds = torch.cat(ss_stds)
     n_obs = torch.tensor(n_obs_list)
+    ## Here we need to have the Tobs which is the Time of the last observation for each subject from the baseline 
+    Tobs = data['val_x'][:, -1]
     
     # Train adaptive shrinkage
     shrinkage = AdaptiveShrinkage()
@@ -244,7 +254,8 @@ def train_adaptive_shrinkage(
         ss_pred=ss_means,
         true_values=data['val_y'],
         n_obs=n_obs,
-        pop_std=pop_std,
+        Tobs=Tobs,
+        pop_std=pop_variance,
         ss_std=ss_stds
     )
     
@@ -333,6 +344,33 @@ def evaluate_personalization(
     
     return pd.DataFrame(results)
 
+def get_deep_params(self):
+    """Get deep kernel parameters excluding feature extractor."""
+    population_hyperparams = {}
+    for param_name, param in self.model.named_parameters():
+        if not param_name.startswith('feature'):
+            population_hyperparams[param_name] = param
+        else:
+            pass 
+    return population_hyperparams
+
+def save_model(self, model_path, weights_path):
+    """Save model and feature extractor weights."""
+    # Save full model
+    torch.save({
+        'model_state_dict': self.model.state_dict(),
+        'likelihood_state_dict': self.likelihood.state_dict()
+    }, model_path)
+    
+    # Save feature extractor weights separately
+    feature_extractor_weights = self.model.feature_extractor.state_dict()
+    with open(weights_path, 'wb') as f:
+        pickle.dump(feature_extractor_weights, f)
+
+    # Extract and print feature importance
+    weights = self.model.feature_extractor.final_linear.weight.cpu().detach()
+    print("Feature Importance Weights:", weights)
+
 def main():
     # Parameters
     data_path = "data/biomarker_data.csv"  # Path to your data file
@@ -351,18 +389,21 @@ def main():
     latent_dim = input_dim // 2
     
     # Train population model
+    print("Model save path:", os.path.join(model_dir, "population_dkgp.pt"))
+    print("Weights save path:", os.path.join(model_dir, "population_dkgp_weights.pt"))
     pop_model = train_population_model(
         data,
         input_dim,
         latent_dim,
-        os.path.join(model_dir, "population_dkgp.pt")
-    )
+        model_save_path=os.path.join(model_dir, "population_dkgp.pt"),
+        weights_save_path=os.path.join(model_dir, "population_dkgp_weights.pt"))
     
     # Train adaptive shrinkage
     shrinkage = train_adaptive_shrinkage(
         pop_model,
         data,
-        os.path.join(model_dir, "adaptive_shrinkage.json")
+        os.path.join(model_dir, "adaptive_shrinkage.json"),
+        os.path.join(model_dir, "adaptive_shrinkage_weights.json")
     )
     
     # Evaluate personalization
@@ -385,6 +426,19 @@ def main():
         'mse_combined': ['mean', 'std']
     })
     print(summary)
+
+    # Generate visuals for ss-dkgp predicted trajectories
+    for i, subject_id in enumerate(test_ids):
+        plt.figure(figsize=(10, 6))
+        plt.plot(range(len(data['val_y'])), data['val_y'], label='True Trajectory')
+        plt.plot(range(len(ss_means)), ss_means, label='Predicted Trajectory')
+        plt.fill_between(range(len(ss_means)), ss_means - ss_stds, ss_means + ss_stds, alpha=0.2, label='Prediction Std')
+        plt.title(f'Subject {subject_id} Predicted Trajectory')
+        plt.xlabel('Time')
+        plt.ylabel('Value')
+        plt.legend()
+        plt.savefig(f'results/subject_{subject_id}_trajectory.png')
+        plt.close()
 
 if __name__ == "__main__":
 
