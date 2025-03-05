@@ -82,6 +82,7 @@ class SubjectSpecificDKGP(BaseDeepKernel):
         self.learning_rate = learning_rate
         self.n_epochs = n_epochs
         self.device = device
+        self.weight_decay = weight_decay
         self.to(device)
     
     def fit(
@@ -110,7 +111,7 @@ class SubjectSpecificDKGP(BaseDeepKernel):
             {'params': self.covar_module.parameters(), 'lr': self.learning_rate},
             {'params': self.mean_module.parameters(), 'lr': self.learning_rate},
             {'params': self.likelihood.parameters(), 'lr': self.learning_rate}
-        ], weight_decay=weight_decay)
+        ], weight_decay=self.weight_decay)
         
         mll = gpytorch.mlls.ExactMarginalLogLikelihood(self.likelihood, self)
         
@@ -119,7 +120,7 @@ class SubjectSpecificDKGP(BaseDeepKernel):
             'val_loss': [] if val_x is not None else None
         }
         
-        print(f'Starting training for {self.n_epochs} epochs with learning rate {self.learning_rate}')
+        # print(f'Starting training for {self.n_epochs} epochs with learning rate {self.learning_rate}')
         
         for epoch in range(self.n_epochs):
             optimizer.zero_grad()

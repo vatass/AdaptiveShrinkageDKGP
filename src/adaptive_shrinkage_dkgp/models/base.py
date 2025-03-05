@@ -173,8 +173,8 @@ class BaseDeepKernel(ExactGP):
             mean = posterior.mean
             
             if return_std:
-                std = posterior.stddev
-                return mean, std
+                var = posterior.variance
+                return mean, var
             return mean
 
 

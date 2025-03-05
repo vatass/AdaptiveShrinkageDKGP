@@ -263,55 +263,28 @@ class AdaptiveShrinkage:
         
         return weights
     
-    def fit(
-        self,
-        pop_pred: Union[np.ndarray, torch.Tensor],
-        ss_pred: Union[np.ndarray, torch.Tensor],
-        true_values: Union[np.ndarray, torch.Tensor],
-        n_obs: Union[np.ndarray, torch.Tensor],
-        pop_std: Optional[Union[np.ndarray, torch.Tensor]] = None,
-        ss_std: Optional[Union[np.ndarray, torch.Tensor]] = None
-    ) -> None:
-        """Train the adaptive shrinkage estimator.
-        
-        Args:
-            pop_pred: Population model predictions
-            ss_pred: Subject-specific model predictions
-            true_values: True target values
-            n_obs: Number of observations for each prediction
-            pop_std: Optional population model prediction uncertainties
-            ss_std: Optional subject-specific model prediction uncertainties
-        """
-        # Convert to numpy if needed
-        if torch.is_tensor(pop_pred):
-            pop_pred = pop_pred.cpu().numpy()
-        if torch.is_tensor(ss_pred):
-            ss_pred = ss_pred.cpu().numpy()
-        if torch.is_tensor(true_values):
-            true_values = true_values.cpu().numpy()
-        if torch.is_tensor(n_obs):
-            n_obs = n_obs.cpu().numpy()
-        if pop_std is not None and torch.is_tensor(pop_std):
-            pop_std = pop_std.cpu().numpy()
-        if ss_std is not None and torch.is_tensor(ss_std):
-            ss_std = ss_std.cpu().numpy()
-        
-        # Calculate oracle shrinkage weights
-        oracle_weights = self._calculate_oracle_shrinkage(
-            pop_pred, ss_pred, true_values
-        )
-        
-        # Prepare features for XGBoost
-        features = [n_obs.reshape(-1, 1)]
-        if pop_std is not None:
-            features.append(pop_std.reshape(-1, 1))
-        if ss_std is not None:
-            features.append(ss_std.reshape(-1, 1))
-        
-        X = np.hstack(features)
-        
-        # Train XGBoost model
-        self.model.fit(X, oracle_weights)
+    def fit(self, oracle_dataset: Dict[str, torch.Tensor]):
+        """Fit the adaptive shrinkage model using the oracle dataset."""
+        # Extract variables from the oracle dataset
+        y_pp = oracle_dataset['y_pp']
+        V_pp = oracle_dataset['V_pp']
+        y_ss = oracle_dataset['y_ss']
+        V_ss = oracle_dataset['V_ss']
+        T_obs = oracle_dataset['T_obs']
+        oracle_alpha = oracle_dataset['oracle_alpha']
+
+        # Implement the learning process to predict shrinkage alpha
+        # This is a placeholder for the actual learning algorithm
+        # You can use a regression model or any other suitable method
+        # For example, using a simple linear regression as a placeholder
+        from sklearn.linear_model import LinearRegression
+        X = torch.cat([y_pp, V_pp, y_ss, V_ss, T_obs], dim=1).numpy()
+        y = oracle_alpha.numpy()
+        model = LinearRegression()
+        model.fit(X, y)
+        self.model = model
+
+        print("Adaptive shrinkage model fitted using oracle dataset.")
     
     def predict(
         self,

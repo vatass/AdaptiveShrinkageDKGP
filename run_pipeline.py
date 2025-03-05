@@ -13,6 +13,7 @@ import matplotlib.pyplot as plt
 from src.adaptive_shrinkage_dkgp.models.population_dkgp import PopulationDKGP
 from src.adaptive_shrinkage_dkgp.models.ss_dkgp import SubjectSpecificDKGP
 from src.adaptive_shrinkage_dkgp.models.adaptive_shrinkage import AdaptiveShrinkage
+from src.adaptive_shrinkage_dkgp.models.alpha_models import optimize_alpha_with_subject_simple
 
 def load_and_preprocess_data(
     data_path: str,
@@ -20,7 +21,7 @@ def load_and_preprocess_data(
     val_size: float = 0.2,
     random_state: int = 42, 
     target: str = 'ROI_48'
-) -> Tuple[Dict[str, torch.Tensor], List[str], List[str], List[str]]:
+) -> Tuple[Dict[str, torch.Tensor], List[str], List[str], List[str], Dict[str, Tuple[int, int]], Dict[str, Tuple[int, int]], Dict[str, Tuple[int, int]]]:
     """Load and preprocess the biomarker data.
     
     Args:
@@ -110,11 +111,30 @@ def load_and_preprocess_data(
 
         x = torch.FloatTensor(x_numeric)
         y = torch.FloatTensor(subset['Y'].values)
-        return x, y, subset['PTID'].tolist()
+        ptids = subset['PTID'].tolist()
+        return x, y, ptids
     
     train_x, train_y, train_ids = extract_data(train_ids)
     val_x, val_y, val_ids = extract_data(val_ids)
     test_x, test_y, test_ids = extract_data(test_ids)
+    
+    # Track start and end indices for each training subject
+    train_subject_indices = {}
+    for subject_id in train_ids:
+        indices = [i for i, ptid in enumerate(train_ids) if ptid == subject_id]
+        train_subject_indices[subject_id] = (indices[0], indices[-1])
+
+    # Track start and end indices for each test subject
+    test_subject_indices = {}
+    for subject_id in test_ids:
+        indices = [i for i, ptid in enumerate(test_ids) if ptid == subject_id]
+        test_subject_indices[subject_id] = (indices[0], indices[-1])
+
+    # Track start and end indices for each validation subject
+    val_subject_indices = {}
+    for subject_id in val_ids:
+        indices = [i for i, ptid in enumerate(val_ids) if ptid == subject_id]
+        val_subject_indices[subject_id] = (indices[0], indices[-1])
     
     # Squeeze target dimensions
     train_y = train_y.squeeze()
@@ -146,8 +166,9 @@ def load_and_preprocess_data(
         'val_x': val_x,
         'val_y': val_y,
         'test_x': test_x,
-        'test_y': test_y
-    }, train_ids, val_ids, test_ids
+        'test_y': test_y,
+        'val_ptids': val_ids
+    }, train_ids, val_ids, test_ids, train_subject_indices, val_subject_indices, test_subject_indices
 
 def train_population_model(
     data: Dict[str, torch.Tensor],
@@ -198,7 +219,9 @@ def train_adaptive_shrinkage(
     pop_model: PopulationDKGP,
     data: Dict[str, torch.Tensor],
     model_save_path: str,
-    weights_save_path: str
+    weights_save_path: str,
+    val_ids: List[str],
+    val_subject_indices: Dict[str, Tuple[int, int]]
 ) -> AdaptiveShrinkage:
     """Train the adaptive shrinkage estimator.
     
@@ -206,58 +229,89 @@ def train_adaptive_shrinkage(
         pop_model: Trained population model
         data: Dictionary containing data tensors
         model_save_path: Path to save the model
+        val_ids: List of validation subject IDs
+        val_subject_indices: Dictionary mapping subject IDs to their start and end indices in the data
     Returns:
         Trained adaptive shrinkage model
     """
     print("Training adaptive shrinkage estimator...")
     
-
     pop_mean, pop_lower, pop_upper, pop_variance = pop_model.predict(data['val_x'])
 
     # Initialize and train subject-specific models for validation subjects
-    ss_means = []
-    ss_stds = []
+    y_ss_list = []
+    V_ss_list = []
+    y_pp_list = []
+    V_pp_list = []
     n_obs_list = []
+    T_obs_list = [] 
+    oracle_alpha_list = []
+    for subject_id in val_ids:
+
+        start_idx = val_subject_indices[subject_id][0]
+        end_idx = val_subject_indices[subject_id][1]
+
+        print('start_idx', start_idx)
+        print('end_idx', end_idx)
+
+        subject_data_x = data['val_x'][start_idx:end_idx+1]
+        subject_data_y = data['val_y'][start_idx:end_idx+1]
+
+        print('subject_data_x', subject_data_x.shape)
+        print('subject_data_y', subject_data_y.shape)
     
-    for i in range(len(data['val_x'])):
-        # Get subject data up to current observation
-        x_sub = data['val_x'][:i+1]
-        y_sub = data['val_y'][:i+1]
-        print('x_sub', x_sub.shape)
-        print('y_sub', y_sub.shape)
-        # Train subject-specific model
-        ss_model = SubjectSpecificDKGP(
-            train_x=x_sub,
-            train_y=y_sub,
-            input_dim=pop_model.input_dim,
-            latent_dim=pop_model.latent_dim,
-            population_params=pop_model.get_deep_params()
-        )
-        ss_model.fit(x_sub, y_sub, verbose=False)
-        
-        # Get predictions
-        mean, std = ss_model.predict(data['val_x'][i:i+1])
-        ss_means.append(mean)
-        ss_stds.append(std)
-        n_obs_list.append(i + 1)
-    
-    ss_means = torch.cat(ss_means)
-    ss_stds = torch.cat(ss_stds)
-    n_obs = torch.tensor(n_obs_list)
-    ## Here we need to have the Tobs which is the Time of the last observation for each subject from the baseline 
-    Tobs = data['val_x'][:, -1]
-    
-    # Train adaptive shrinkage
+        for i in range(1, len(subject_data_x.shape[0]) - 1):  # Start from the second observation to the second to last
+
+            # Get subject data up to current observation for training the subject-specific model
+            x_sub_observed = data['val_x'][:i+1]
+            y_sub_observed = data['val_y'][:i+1] 
+
+            print('x_sub_observed', x_sub_observed.shape)
+            print('y_sub_observed', y_sub_observed.shape)
+
+            # Train subject-specific model
+            ss_model = SubjectSpecificDKGP(
+                train_x=x_sub_observed,
+                train_y=y_sub_observed,
+                input_dim=pop_model.input_dim,
+                latent_dim=pop_model.latent_dim,
+                population_params=pop_model.get_deep_params()
+            )
+            ss_model.fit(x_sub_observed, y_sub_observed, verbose=False)
+            
+            # Get population model prediction for the whole trajectory 
+            y_true = subject_data_y
+            y_pp, V_pp = pop_model.predict(subject_data_x)
+
+            # Get predictions for the whole trajectory
+            y_ss, V_ss = ss_model.predict(subject_data_x)
+            
+            y_ss_list.append(y_ss)
+            V_ss_list.append(V_ss)
+            y_pp_list.append(y_pp)
+            V_pp_list.append(V_pp)
+            n_obs_list.append(i + 1)
+            T_obs_list.append(subject_data_x[:, -1])
+
+            # find the oracle alpha for this predicted y_ss, y_pp and y_true    
+            oracle_alpha =  optimize_alpha_with_subject_simple(y_pp, y_ss, y_true)
+
+            oracle_alpha_list.append(oracle_alpha)
+
+    # Create oracle dataset
+    oracle_dataset = {
+        'y_pp': torch.cat(y_pp_list),
+        'V_pp': torch.cat(V_pp_list),
+        'y_ss': torch.cat(y_ss_list),
+        'V_ss': torch.cat(V_ss_list),
+        'T_obs': torch.cat(T_obs_list),
+        'oracle_alpha': torch.tensor(oracle_alpha_list)
+    }
+
+    print('Oracle Dataset is created!')
+
     shrinkage = AdaptiveShrinkage()
-    shrinkage.fit(
-        pop_pred=pop_mean,
-        ss_pred=ss_means,
-        true_values=data['val_y'],
-        n_obs=n_obs,
-        Tobs=Tobs,
-        pop_std=pop_variance,
-        ss_std=ss_stds
-    )
+    shrinkage.fit(oracle_dataset)
     
     # Save model
     shrinkage.save_model(model_save_path)
@@ -269,6 +323,7 @@ def evaluate_personalization(
     shrinkage: AdaptiveShrinkage,
     data: Dict[str, torch.Tensor],
     test_ids: List[str],
+    test_subject_indices: Dict[str, Tuple[int, int]],
     max_history: int = 10
 ) -> pd.DataFrame:
     """Evaluate personalization on test subjects.
@@ -278,6 +333,7 @@ def evaluate_personalization(
         shrinkage: Trained adaptive shrinkage model
         data: Dictionary containing data tensors
         test_ids: List of test subject IDs
+        test_subject_indices: Dictionary mapping test subject IDs to their start and end indices
         max_history: Maximum number of history points to consider
         
     Returns:
@@ -296,10 +352,10 @@ def evaluate_personalization(
     for subject_id in test_ids:
         print(f"Processing subject {subject_id}...")
         
-        # Get subject data
-        subject_mask = data['test_x'][:, 0] == subject_id  # Assuming first column is subject ID
-        x_subject = data['test_x'][subject_mask]
-        y_subject = data['test_y'][subject_mask]
+        # Get subject data using indices
+        start_idx, end_idx = test_subject_indices[subject_id]
+        x_subject = data['test_x'][start_idx:end_idx+1]
+        y_subject = data['test_y'][start_idx:end_idx+1]
         
         # Get population predictions
         pop_mean, pop_std = pop_model.predict(x_subject)
@@ -382,8 +438,8 @@ def main():
     os.makedirs(results_dir, exist_ok=True)
     
     # Load and preprocess data
-    data, train_ids, val_ids, test_ids = load_and_preprocess_data(data_path)
-    
+    data, train_ids, val_ids, test_ids, train_subject_indices, val_subject_indices, test_subject_indices = load_and_preprocess_data(data_path)
+
     # Set dimensions based on data
     input_dim = data['train_x'].shape[1]
     latent_dim = input_dim // 2
@@ -391,6 +447,9 @@ def main():
     # Train population model
     print("Model save path:", os.path.join(model_dir, "population_dkgp.pt"))
     print("Weights save path:", os.path.join(model_dir, "population_dkgp_weights.pt"))
+    
+    # Train population model
+    print('Training population model...')
     pop_model = train_population_model(
         data,
         input_dim,
@@ -399,19 +458,23 @@ def main():
         weights_save_path=os.path.join(model_dir, "population_dkgp_weights.pt"))
     
     # Train adaptive shrinkage
-    shrinkage = train_adaptive_shrinkage(
+    print('Training adaptive shrinkage...')
+    adaptive_shrinkage_estimator = train_adaptive_shrinkage(
         pop_model,
         data,
         os.path.join(model_dir, "adaptive_shrinkage.json"),
-        os.path.join(model_dir, "adaptive_shrinkage_weights.json")
+        os.path.join(model_dir, "adaptive_shrinkage_weights.json"), 
+        val_ids,
+        val_subject_indices
     )
     
     # Evaluate personalization
     results = evaluate_personalization(
         pop_model,
-        shrinkage,
+        adaptive_shrinkage_estimator,
         data,
-        test_ids
+        test_ids,
+        test_subject_indices
     )
     
     # Save results
