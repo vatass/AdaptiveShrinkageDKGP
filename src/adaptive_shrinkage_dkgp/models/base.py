@@ -156,14 +156,11 @@ class BaseDeepKernel(ExactGP):
     def predict(
         self,
         x: torch.Tensor,
-        return_std: bool = True
     ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
         """Make predictions with the model.
         
         Args:
             x: Input tensor
-            return_std: Whether to return predictive standard deviation
-            
         Returns:
             Mean predictions and optionally standard deviations
         """
@@ -171,11 +168,10 @@ class BaseDeepKernel(ExactGP):
         with torch.no_grad(), gpytorch.settings.fast_pred_var():
             posterior = self(x)
             mean = posterior.mean
-            
-            if return_std:
-                var = posterior.variance
-                return mean, var
-            return mean
+            lower, upper = posterior.confidence_region()
+            var = posterior.variance
+
+            return mean, lower, upper, var
 
 
 
@@ -256,9 +252,9 @@ class LargeFeatureExtractor(torch.nn.Sequential):
         self.depth = depth
         self.activation_function = activ
         self.droupout_rate = dr
-        print('depth', depth)
+        # print('depth', depth)
         final_layer = depth[-1]
-        print('final layer', final_layer)
+        # print('final layer', final_layer)
 
         for i, d in enumerate(self.depth[:-1]):
             dim1, dim2 = d
@@ -272,7 +268,7 @@ class LargeFeatureExtractor(torch.nn.Sequential):
             elif self.activation_function == 'selu':
                 self.add_module(f'activ{i+1}', torch.nn.SELU())
 
-        print('Final Layer', final_layer[0], final_layer[1])
+        # print('Final Layer', final_layer[0], final_layer[1])
         self.add_module('final_linear', torch.nn.Linear(int(final_layer[0]), int(final_layer[1])))
         self.add_module('dr1', torch.nn.Dropout(self.droupout_rate))
 

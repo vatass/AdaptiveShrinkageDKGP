@@ -18,6 +18,13 @@ import torch.optim as optim
 
 
 def objective_within_subject_simple(alpha, y_g, y_p, y_t):
+    # Ensure y_p and y_t are numpy arrays
+    if isinstance(y_p, torch.Tensor):
+        y_p = y_p.cpu().numpy()
+    if isinstance(y_t, torch.Tensor):
+        y_t = y_t.cpu().numpy()
+
+
     combined_predictions = alpha * y_p + (1 - alpha) * y_t
     
     # Calculate squared errors

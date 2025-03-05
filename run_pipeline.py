@@ -9,6 +9,7 @@ from sklearn.model_selection import train_test_split
 from typing import Tuple, Dict, List
 import pickle
 import matplotlib.pyplot as plt
+import seaborn as sns
 
 from src.adaptive_shrinkage_dkgp.models.population_dkgp import PopulationDKGP
 from src.adaptive_shrinkage_dkgp.models.ss_dkgp import SubjectSpecificDKGP
@@ -236,8 +237,6 @@ def train_adaptive_shrinkage(
     """
     print("Training adaptive shrinkage estimator...")
     
-    pop_mean, pop_lower, pop_upper, pop_variance = pop_model.predict(data['val_x'])
-
     # Initialize and train subject-specific models for validation subjects
     y_ss_list = []
     V_ss_list = []
@@ -251,23 +250,14 @@ def train_adaptive_shrinkage(
         start_idx = val_subject_indices[subject_id][0]
         end_idx = val_subject_indices[subject_id][1]
 
-        print('start_idx', start_idx)
-        print('end_idx', end_idx)
-
         subject_data_x = data['val_x'][start_idx:end_idx+1]
         subject_data_y = data['val_y'][start_idx:end_idx+1]
-
-        print('subject_data_x', subject_data_x.shape)
-        print('subject_data_y', subject_data_y.shape)
     
-        for i in range(1, len(subject_data_x.shape[0]) - 1):  # Start from the second observation to the second to last
+        for i in range(1, subject_data_x.shape[0] - 1):  # Start from the second observation to the second to last
 
             # Get subject data up to current observation for training the subject-specific model
             x_sub_observed = data['val_x'][:i+1]
             y_sub_observed = data['val_y'][:i+1] 
-
-            print('x_sub_observed', x_sub_observed.shape)
-            print('y_sub_observed', y_sub_observed.shape)
 
             # Train subject-specific model
             ss_model = SubjectSpecificDKGP(
@@ -281,17 +271,25 @@ def train_adaptive_shrinkage(
             
             # Get population model prediction for the whole trajectory 
             y_true = subject_data_y
-            y_pp, V_pp = pop_model.predict(subject_data_x)
+            y_pp, _, _, V_pp = pop_model.predict(subject_data_x)
 
             # Get predictions for the whole trajectory
-            y_ss, V_ss = ss_model.predict(subject_data_x)
+            y_ss ,_, _, V_ss = ss_model.predict(subject_data_x)
+
+            # plot the predicted trajectory
+            plt.figure(figsize=(10, 6))
+            plt.plot(range(len(y_true)), y_true.cpu().numpy(), label='True Trajectory')
+            plt.plot(range(len(y_ss)), y_ss.cpu().numpy(), label='Predicted Trajectory')
+            plt.legend()
+            plt.savefig(f'results/subject_{subject_id}_trajectory_obs_{i}.png')
+            plt.close()
             
             y_ss_list.append(y_ss)
             V_ss_list.append(V_ss)
             y_pp_list.append(y_pp)
             V_pp_list.append(V_pp)
             n_obs_list.append(i + 1)
-            T_obs_list.append(subject_data_x[:, -1])
+            T_obs_list.append(subject_data_x[-1, -1])
 
             # find the oracle alpha for this predicted y_ss, y_pp and y_true    
             oracle_alpha =  optimize_alpha_with_subject_simple(y_pp, y_ss, y_true)
@@ -309,6 +307,8 @@ def train_adaptive_shrinkage(
     }
 
     print('Oracle Dataset is created!')
+
+    sys.exit(0)
 
     shrinkage = AdaptiveShrinkage()
     shrinkage.fit(oracle_dataset)
@@ -340,15 +340,19 @@ def evaluate_personalization(
         DataFrame with evaluation results
     """
     print("Evaluating personalization on test subjects...")
-    
+
     results = {
         'subject_id': [],
         'n_observations': [],
+        'T_obs': [],
         'mse_population': [],
         'mse_subject_specific': [],
-        'mse_combined': []
+        'mse_personalized': []
     }
     
+    # Store alpha values for plotting
+    alpha_values = []
+
     for subject_id in test_ids:
         print(f"Processing subject {subject_id}...")
         
@@ -357,38 +361,45 @@ def evaluate_personalization(
         x_subject = data['test_x'][start_idx:end_idx+1]
         y_subject = data['test_y'][start_idx:end_idx+1]
         
-        # Get population predictions
-        pop_mean, pop_std = pop_model.predict(x_subject)
-        
+
+        # iterate over the number of observations
         for n_obs in range(1, min(len(x_subject), max_history + 1)):
-            # Train subject-specific model on history
-            x_history = x_subject[:n_obs]
-            y_history = y_subject[:n_obs]
+
+            x_subject_history = x_subject[:n_obs]
+            y_subject_history = y_subject[:n_obs]
+
+            T_obs = x_subject_history[n_obs-1, -1]
+
+            # Get population predictions
+            y_pp, _, _, V_pp = pop_model.predict(x_subject)
             
+            # Get subject-specific predictions
             ss_model = SubjectSpecificDKGP(
-                train_x=x_history,
-                train_y=y_history,
+                train_x=x_subject_history,
+                train_y=y_subject_history,
                 input_dim=pop_model.input_dim,
                 latent_dim=pop_model.latent_dim,
                 population_params=pop_model.get_deep_params()
             )
-            ss_model.fit(x_history, y_history, verbose=False)
+            ss_model.fit(x_subject_history, y_subject_history, verbose=False)
             
             # Get predictions
-            ss_mean, ss_std = ss_model.predict(x_subject)
+            y_ss,_, _, V_ss = ss_model.predict( )
             
             # Get combined predictions
-            combined_pred = shrinkage.predict(
-                pop_pred=pop_mean,
-                ss_pred=ss_mean,
+            combined_pred, combined_var, alpha = shrinkage.predict(
+                pop_pred=y_pp,
+                ss_pred=y_ss,
                 n_obs=torch.tensor([n_obs] * len(x_subject)),
-                pop_std=pop_std,
-                ss_std=ss_std
+                pop_var=V_pp,
+                ss_var=V_ss ,
+                T_obs=T_obs,
+                return_alpha=True  # Ensure the function returns alpha
             )
-            
+     
             # Calculate MSE
-            mse_pop = ((pop_mean - y_subject) ** 2).mean().item()
-            mse_ss = ((ss_mean - y_subject) ** 2).mean().item()
+            mse_pop = ((y_pp - y_subject) ** 2).mean().item()
+            mse_ss = ((y_ss - y_subject) ** 2).mean().item()
             mse_combined = ((combined_pred - y_subject) ** 2).mean().item()
             
             # Store results
@@ -396,8 +407,41 @@ def evaluate_personalization(
             results['n_observations'].append(n_obs)
             results['mse_population'].append(mse_pop)
             results['mse_subject_specific'].append(mse_ss)
-            results['mse_combined'].append(mse_combined)
+            results['mse_personalized'].append(mse_combined)
+
+            # Store alpha values
+            alpha_values.extend(alpha.cpu().numpy())
+
+            # Generate visuals for the current subject's predicted trajectory
+            plt.figure(figsize=(10, 6))
+            true_trajectory = y_subject.cpu().numpy()
+            predicted_trajectory = combined_pred.cpu().numpy()
+            prediction_var = combined_var.cpu().numpy()
+            prediction_std = np.sqrt(prediction_var)
+
+            plt.plot(range(len(true_trajectory)), true_trajectory, label='True Trajectory')
+            plt.plot(range(len(predicted_trajectory)), predicted_trajectory, label='Predicted Trajectory')
+            plt.fill_between(range(len(predicted_trajectory)),
+                             predicted_trajectory - 1.96 * prediction_std,
+                             predicted_trajectory + 1.96 * prediction_std,
+                             alpha=0.2, label='Prediction Std')
+            plt.title(f'Subject {subject_id} Predicted Trajectory')
+            plt.xlabel('Time')
+            plt.ylabel('Value')
+            plt.legend()
+            plt.savefig(f'results/subject_{subject_id}_trajectory_obs_{n_obs}.png')
+            plt.close()
     
+    # Plot the distribution of alpha with the number of observations
+    plt.figure(figsize=(10, 6))
+    sns.boxplot(x=results['n_observations'], y=alpha_values)
+    plt.title('Distribution of Alpha with Number of Observations')
+    plt.xlabel('Number of Observations')
+    plt.ylabel('Alpha')
+    plt.grid(True)
+    plt.savefig('results/alpha_distribution.png')
+    plt.close()
+
     return pd.DataFrame(results)
 
 def get_deep_params(self):
@@ -490,20 +534,7 @@ def main():
     })
     print(summary)
 
-    # Generate visuals for ss-dkgp predicted trajectories
-    for i, subject_id in enumerate(test_ids):
-        plt.figure(figsize=(10, 6))
-        plt.plot(range(len(data['val_y'])), data['val_y'], label='True Trajectory')
-        plt.plot(range(len(ss_means)), ss_means, label='Predicted Trajectory')
-        plt.fill_between(range(len(ss_means)), ss_means - ss_stds, ss_means + ss_stds, alpha=0.2, label='Prediction Std')
-        plt.title(f'Subject {subject_id} Predicted Trajectory')
-        plt.xlabel('Time')
-        plt.ylabel('Value')
-        plt.legend()
-        plt.savefig(f'results/subject_{subject_id}_trajectory.png')
-        plt.close()
+    print('Done!')
 
 if __name__ == "__main__":
-
-
     main() 

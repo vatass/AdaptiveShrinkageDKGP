@@ -273,17 +273,10 @@ class AdaptiveShrinkage:
         T_obs = oracle_dataset['T_obs']
         oracle_alpha = oracle_dataset['oracle_alpha']
 
-        # Implement the learning process to predict shrinkage alpha
-        # This is a placeholder for the actual learning algorithm
-        # You can use a regression model or any other suitable method
-        # For example, using a simple linear regression as a placeholder
-        from sklearn.linear_model import LinearRegression
+        # Use the XGBRegressor model initialized in the constructor
         X = torch.cat([y_pp, V_pp, y_ss, V_ss, T_obs], dim=1).numpy()
         y = oracle_alpha.numpy()
-        model = LinearRegression()
-        model.fit(X, y)
-        self.model = model
-
+        self.model.fit(X, y)
         print("Adaptive shrinkage model fitted using oracle dataset.")
     
     def predict(
@@ -291,8 +284,8 @@ class AdaptiveShrinkage:
         pop_pred: Union[np.ndarray, torch.Tensor],
         ss_pred: Union[np.ndarray, torch.Tensor],
         n_obs: Union[np.ndarray, torch.Tensor],
-        pop_std: Optional[Union[np.ndarray, torch.Tensor]] = None,
-        ss_std: Optional[Union[np.ndarray, torch.Tensor]] = None
+        pop_var: Optional[Union[np.ndarray, torch.Tensor]] = None,
+        ss_var: Optional[Union[np.ndarray, torch.Tensor]] = None
     ) -> Union[np.ndarray, torch.Tensor]:
         """Predict optimal shrinkage weights and combine predictions.
         
@@ -312,31 +305,34 @@ class AdaptiveShrinkage:
             pop_pred = pop_pred.cpu().numpy()
             ss_pred = ss_pred.cpu().numpy()
             n_obs = n_obs.cpu().numpy()
-            if pop_std is not None:
-                pop_std = pop_std.cpu().numpy()
-            if ss_std is not None:
-                ss_std = ss_std.cpu().numpy()
+            if pop_var is not None:
+                pop_var = pop_var.cpu().numpy()
+            if ss_var is not None:
+                ss_var = ss_var.cpu().numpy()
         
         # Prepare features
         features = [n_obs.reshape(-1, 1)]
-        if pop_std is not None:
-            features.append(pop_std.reshape(-1, 1))
-        if ss_std is not None:
-            features.append(ss_std.reshape(-1, 1))
+        if pop_var is not None:
+            features.append(pop_var.reshape(-1, 1))
+        if ss_var is not None:
+            features.append(ss_var.reshape(-1, 1))
         
+
+        T_obs = T_obs.reshape(-1, 1)
+        features.append(T_obs)
+
+        # features sequence should be y_pp, V_pp, y_ss, V_ss, T_obs
         X = np.hstack(features)
-        
+        print(X.shape)
         # Predict weights
-        weights = self.model.predict(X)
-        
+        adaptive_shrinkage_alpha = self.model.predict(X)
+        print(adaptive_shrinkage_alpha.shape)
+
         # Combine predictions
-        combined = weights * pop_pred + (1 - weights) * ss_pred
-        
-        # Convert back to tensor if input was tensor
-        if is_tensor:
-            combined = torch.tensor(combined, device=pop_pred.device)
-        
-        return combined
+        personalized_pred = adaptive_shrinkage_alpha * pop_pred + (1 - adaptive_shrinkage_alpha) * ss_pred
+        personalized_pred_var = np.sqrt(adaptive_shrinkage_alpha * pop_var**2 + (1 - adaptive_shrinkage_alpha) * ss_var**2)
+
+        return personalized_pred, personalized_pred_var, adaptive_shrinkage_alpha
     
     def save_model(self, path: str) -> None:
         """Save the XGBoost model to disk.

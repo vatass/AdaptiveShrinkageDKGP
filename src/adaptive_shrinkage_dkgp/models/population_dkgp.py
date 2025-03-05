@@ -169,7 +169,7 @@ class PopulationDKGP(BaseDeepKernel):
     def predict(self, test_data, roi_idx=-1):
         """Make predictions with uncertainty."""
 
-        print('test_data', test_data.shape)
+        # print('test_data', test_data.shape)
 
         X_test = test_data
         
