@@ -2,6 +2,7 @@
 Complete pipeline for biomarker prediction using Deep Kernel Regression with Adaptive Shrinkage Estimation
 """
 import os
+import sys
 import numpy as np
 import torch
 import pandas as pd
@@ -19,7 +20,7 @@ from src.adaptive_shrinkage_dkgp.models.alpha_models import optimize_alpha_with_
 def load_and_preprocess_data(
     data_path: str,
     train_size: float = 0.6,
-    val_size: float = 0.2,
+    val_size: float = 0.1,
     random_state: int = 42, 
     target: str = 'ROI_48'
 ) -> Tuple[Dict[str, torch.Tensor], List[str], List[str], List[str], Dict[str, Tuple[int, int]], Dict[str, Tuple[int, int]], Dict[str, Tuple[int, int]]]:
@@ -96,9 +97,9 @@ def load_and_preprocess_data(
         random_state=random_state
     )
     
-    print(f'Train IDs: {len(train_ids)}')
-    print(f'Val IDs: {len(val_ids)}')
-    print(f'Test IDs: {len(test_ids)}')
+    # print(f'Train IDs: {len(train_ids)}')
+    # print(f'Val IDs: {len(val_ids)}')
+    # print(f'Test IDs: {len(test_ids)}')
     
     # Extract data for each set
     def extract_data(ids):
@@ -194,6 +195,7 @@ def train_population_model(
     """
     print("Training population DKGP model...")
     
+
     model = PopulationDKGP(
         train_x=data['train_x'],
         train_y=data['train_y'],
@@ -204,10 +206,10 @@ def train_population_model(
     )
     
     history = model.fit(
-        train_data=data,  # Χρησιμοποιήστε τα δεδομένα εκπαίδευσης
-        roi_idx=-1,  # Χρησιμοποιήστε το roi_idx αν χρειάζεται
-        num_epochs=500,  # Προσαρμόστε τον αριθμό των εποχών αν χρειάζεται
-        lr=0.01844  # Προσαρμόστε το learning rate αν χρειάζεται
+        train_x=data['train_x'],
+        train_y=data['train_y'],
+        num_epochs=500, 
+        lr=0.01844 
     )
     
     # Save model
@@ -237,14 +239,24 @@ def train_adaptive_shrinkage(
     """
     print("Training adaptive shrinkage estimator...")
     
+    # Set publication-quality plot parameters
+    plt.rcParams.update({
+        'font.size': 14,
+        'font.family': 'serif',
+        'axes.labelsize': 16,
+        'axes.titlesize': 18,
+        'xtick.labelsize': 14,
+        'ytick.labelsize': 14,
+        'legend.fontsize': 14,
+        'figure.figsize': (10, 6),
+        'figure.dpi': 300,
+        'savefig.dpi': 300,
+        'savefig.bbox': 'tight',
+        'savefig.pad_inches': 0.1
+    })
+    
     # Initialize and train subject-specific models for validation subjects
-    y_ss_list = []
-    V_ss_list = []
-    y_pp_list = []
-    V_pp_list = []
-    n_obs_list = []
-    T_obs_list = [] 
-    oracle_alpha_list = []
+    y_ss_list, V_ss_list, y_pp_list, V_pp_list, n_obs_list, T_obs_list, oracle_alpha_list = [], [], [], [], [], [], []
     for subject_id in val_ids:
 
         start_idx = val_subject_indices[subject_id][0]
@@ -265,22 +277,74 @@ def train_adaptive_shrinkage(
                 train_y=y_sub_observed,
                 input_dim=pop_model.input_dim,
                 latent_dim=pop_model.latent_dim,
-                population_params=pop_model.get_deep_params()
+                population_params=pop_model.get_deep_params(),
+                learning_rate=0.01,  # Αυξημένος ρυθμός μάθησης
+                n_epochs=200,        # Αυξημένος αριθμός εποχών
+                weight_decay=0.01    # Μειωμένο weight decay
             )
-            ss_model.fit(x_sub_observed, y_sub_observed, verbose=False)
+            
+            # Εκπαίδευση με παρακολούθηση της απώλειας
+            history = ss_model.fit(x_sub_observed, y_sub_observed, verbose=True)
+            
+            # Έλεγχος αν η απώλεια μειώνεται
+            if len(history['train_loss']) > 1:
+                initial_loss = history['train_loss'][0]
+                final_loss = history['train_loss'][-1]
+                loss_reduction = (initial_loss - final_loss) / initial_loss * 100
+                print(f"Loss reduction: {loss_reduction:.2f}% (Initial: {initial_loss:.4f}, Final: {final_loss:.4f})")
             
             # Get population model prediction for the whole trajectory 
             y_true = subject_data_y
             y_pp, _, _, V_pp = pop_model.predict(subject_data_x)
 
             # Get predictions for the whole trajectory
-            y_ss ,_, _, V_ss = ss_model.predict(subject_data_x)
+            y_ss, _, _, V_ss = ss_model.predict(subject_data_x)
 
-            # plot the predicted trajectory
-            plt.figure(figsize=(10, 6))
-            plt.plot(range(len(y_true)), y_true.cpu().numpy(), label='True Trajectory')
-            plt.plot(range(len(y_ss)), y_ss.cpu().numpy(), label='Predicted Trajectory')
-            plt.legend()
+            # Convert to numpy for plotting
+            y_true_np = y_true.cpu().numpy()
+            y_ss_np = y_ss.cpu().numpy()
+            
+            # Calculate confidence intervals (2 standard deviations)
+            if isinstance(V_ss, np.ndarray):
+                std_ss = np.sqrt(V_ss)
+            else:
+                std_ss = torch.sqrt(V_ss).cpu().numpy()
+                
+            upper_bound = y_ss_np + 1.96 * std_ss
+            lower_bound = y_ss_np - 1.96 * std_ss
+            
+            # Get time values
+            time = subject_data_x[:, -1].cpu().numpy()
+            
+            # Plot trajectories with confidence intervals
+            fig, ax = plt.subplots(figsize=(10, 6))
+            
+            # Plot confidence interval
+            ax.fill_between(time, lower_bound.flatten(), upper_bound.flatten(), 
+                            alpha=0.3, color='green', label='95% Confidence Interval')
+            
+            # Plot ground truth and predictions
+            ax.scatter(time, y_true_np, s=80, marker='o', color='blue', 
+                       label='Ground Truth', zorder=3, edgecolors='black', linewidths=0.5)
+            ax.plot(time, y_ss_np, linewidth=2.5, color='green', 
+                    label='Subject-Specific Prediction', zorder=2)
+            
+            # Customize plot
+            ax.set_title(f'Subject {subject_id} Trajectory Prediction (Obs: {i+1})')
+            ax.set_xlabel('Time from baseline (in months)')
+            ax.set_ylabel('Hippocampal Volume (standardized)')
+            ax.grid(True, linestyle='--', alpha=0.7)
+            ax.spines['top'].set_visible(False)
+            ax.spines['right'].set_visible(False)
+            
+            # Add legend with shadow
+            legend = ax.legend(frameon=True, fancybox=True, shadow=True, loc='best')
+            frame = legend.get_frame()
+            frame.set_facecolor('white')
+            frame.set_alpha(0.9)
+            
+            # Save figure
+            plt.tight_layout()
             plt.savefig(f'results/subject_{subject_id}_trajectory_obs_{i}.png')
             plt.close()
             
@@ -307,7 +371,6 @@ def train_adaptive_shrinkage(
     }
 
     print('Oracle Dataset is created!')
-
     sys.exit(0)
 
     shrinkage = AdaptiveShrinkage()
@@ -444,6 +507,117 @@ def evaluate_personalization(
 
     return pd.DataFrame(results)
 
+def evaluate_population_model(
+    pop_model: PopulationDKGP,
+    data: Dict[str, torch.Tensor],
+    test_ids: List[str],
+    test_subject_indices: Dict[str, Tuple[int, int]]
+) -> pd.DataFrame:
+    """Evaluate the population model on test subjects.
+    
+    Args:
+        pop_model: Trained population model
+        data: Dictionary containing data tensors
+        test_ids: List of test subject IDs
+        test_subject_indices: Dictionary mapping test subject IDs to their start and end indices
+        
+    Returns:
+        DataFrame with evaluation results
+    """
+    results = {
+        'subject_id': [],
+        'mse_population': [],
+        'mae_population': []
+    }
+    
+    # Set publication-quality plot parameters
+    plt.rcParams.update({
+        'font.size': 14,
+        'axes.labelsize': 16,
+        'axes.titlesize': 18,
+        'xtick.labelsize': 14,
+        'ytick.labelsize': 14,
+        'legend.fontsize': 14,
+        'figure.figsize': (10, 6),
+        'figure.dpi': 300,
+        'savefig.dpi': 300,
+        'savefig.bbox': 'tight',
+        'savefig.pad_inches': 0.1
+    })
+    
+    for subject_id in test_ids:
+        # Get subject data using indices
+        start_idx, end_idx = test_subject_indices[subject_id]
+        x_subject = data['test_x'][start_idx:end_idx+1]
+        y_subject = data['test_y'][start_idx:end_idx+1]
+        
+        # Get population predictions with uncertainty
+        y_pp, _, _, V_pp = pop_model.predict(x_subject)
+        
+        # Convert y_pp to Tensor if it's a numpy array
+        if isinstance(y_pp, np.ndarray):
+            y_pp = torch.from_numpy(y_pp).to(y_subject.device)
+        
+        # Calculate MSE and MAE
+        mse_pop = ((y_pp - y_subject) ** 2).mean().item()
+        mae_pop = torch.abs(y_pp - y_subject).mean().item()
+        
+        # Store results
+        results['subject_id'].append(subject_id)
+        results['mse_population'].append(mse_pop)
+        results['mae_population'].append(mae_pop)
+
+        # Convert to numpy for plotting
+        y_subject_np = y_subject.cpu().numpy()
+        y_pp_np = y_pp.cpu().numpy()
+        
+        # Calculate confidence intervals (2 standard deviations)
+        if isinstance(V_pp, np.ndarray):
+            std_pp = np.sqrt(V_pp)
+        else:
+            std_pp = torch.sqrt(V_pp).cpu().numpy()
+            
+        upper_bound = y_pp_np + 1.96 * std_pp
+        lower_bound = y_pp_np - 1.96 * std_pp
+        
+
+        time = x_subject[:, -1].cpu().numpy()
+
+
+        # Plot trajectories with confidence intervals
+        fig, ax = plt.subplots(figsize=(10, 6))
+        
+        # Plot confidence interval
+        ax.fill_between(time, lower_bound.flatten(), upper_bound.flatten(), 
+                        alpha=0.3, color='orange', label='95% Confidence Interval')
+        
+        # Plot ground truth and predictions
+        ax.scatter(time, y_subject_np, s=80, marker='o', color='blue', 
+                   label='Ground Truth', zorder=3, edgecolors='black', linewidths=0.5)
+        ax.plot(time, y_pp_np, linewidth=2.5, color='orange', 
+                label='Population Prediction', zorder=2)
+        
+        # Customize plot
+        ax.set_title(f'Subject {subject_id} Trajectory Prediction')
+        ax.set_xlabel('Time from baseline (in months)')
+        ax.set_ylabel('Hippocampal Volume (standardized)')
+        ax.grid(True, linestyle='--', alpha=0.7)
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+        
+        # Add legend with shadow
+        legend = ax.legend(frameon=True, fancybox=True, shadow=True, loc='best')
+        frame = legend.get_frame()
+        frame.set_facecolor('white')
+        frame.set_alpha(0.9)
+        
+        # Save figure
+        plt.tight_layout()
+        plt.savefig(f'results/subject_{subject_id}_population_trajectory.png')
+        plt.close()
+
+    return pd.DataFrame(results)
+
 def get_deep_params(self):
     """Get deep kernel parameters excluding feature extractor."""
     population_hyperparams = {}
@@ -471,6 +645,7 @@ def save_model(self, model_path, weights_path):
     weights = self.model.feature_extractor.final_linear.weight.cpu().detach()
     print("Feature Importance Weights:", weights)
 
+
 def main():
     # Parameters
     data_path = "data/biomarker_data.csv"  # Path to your data file
@@ -493,6 +668,7 @@ def main():
     print("Weights save path:", os.path.join(model_dir, "population_dkgp_weights.pt"))
     
     # Train population model
+    print(type(data))
     print('Training population model...')
     pop_model = train_population_model(
         data,
@@ -501,6 +677,15 @@ def main():
         model_save_path=os.path.join(model_dir, "population_dkgp.pt"),
         weights_save_path=os.path.join(model_dir, "population_dkgp_weights.pt"))
     
+    # Evaluate the population model
+    # print('Evaluating population model...')
+    # results = evaluate_population_model(
+    #     pop_model,
+    #     data,
+    #     test_ids,
+    #     test_subject_indices
+    # )
+
     # Train adaptive shrinkage
     print('Training adaptive shrinkage...')
     adaptive_shrinkage_estimator = train_adaptive_shrinkage(

@@ -83,23 +83,13 @@ class PopulationDKGP(BaseDeepKernel):
             gphyper=None  # Adjust based on your needs
         ).to(device)
 
-    def process_data(self, data, roi_idx=-1):
-        """Process input data and move to device."""
-        # Υποθέτουμε ότι το data είναι ήδη torch.Tensor
-
-        X = data['train_x']  # Ή 'val_x' ή 'test_x' ανάλογα με το σύνολο δεδομένων
-        y = data['train_y']  # Ή 'val_y' ή 'test_y' ανάλογα με το σύνολο δεδομένων
-        
-        if roi_idx != -1:
-            y = y[:, roi_idx]
-        y = y.squeeze()
-        
-        return X.to(self.device), y.to(self.device)
-
-    def fit(self, train_data, roi_idx=-1, num_epochs=500, lr=0.01844, weight_decay=0.01):
+    def fit(self, train_x, train_y, num_epochs=500, lr=0.01844, weight_decay=0.1):
         """Train the population model."""
-        X_train, y_train = self.process_data(train_data, roi_idx)
-        
+
+        # convert to tensor if not and move to gpu if not already
+        train_x = torch.tensor(train_x).to(self.device)
+        train_y = torch.tensor(train_y).to(self.device)
+
         # Set to training mode
         self.model.train()
         self.likelihood.train()
@@ -118,15 +108,15 @@ class PopulationDKGP(BaseDeepKernel):
         # Training loop
         for epoch in range(num_epochs):
             optimizer.zero_grad()
-            output = self.model(X_train)
-            loss = -mll(output, y_train)
+            output = self.model(train_x)
+            loss = -mll(output, train_y)
             loss.backward()
             optimizer.step()
             
             if (epoch + 1) % 50 == 0:
                 print(f'Epoch {epoch+1}/{num_epochs} - Loss: {loss.item():.4f}')
         
-        return self.evaluate(X_train, y_train)
+        return self.evaluate(train_x, train_y)
 
     def evaluate(self, X, y):
         """Evaluate model performance."""
@@ -181,11 +171,7 @@ class PopulationDKGP(BaseDeepKernel):
             mean = observed_pred.mean
             lower, upper = observed_pred.confidence_region()
             variance = observed_pred.variance
-        # Move predictions to CPU
-        print('mean shape:', mean.shape)
-        print('lower shape:', lower.shape)
-        print('upper shape:', upper.shape)
-        print('variance shape:', variance.shape)
+
         return mean.cpu().numpy(), lower.cpu().numpy(), upper.cpu().numpy(), variance.cpu().numpy()
 
     def save_model(self, model_path, weights_path):
@@ -233,17 +219,16 @@ def train_population_model(
         train_x=data['train_x'],
         train_y=data['train_y'],
         input_dim=input_dim,
-        hidden_dim=64,  # Μπορείτε να προσαρμόσετε το hidden_dim αν χρειάζεται
+        hidden_dim=64,  
         feature_dim=latent_dim,
         device=device
-    )
+    ) 
     
-    # Εκπαίδευση του μοντέλου
     history = model.fit(
-        train_data=data,  # Χρησιμοποιήστε τα δεδομένα εκπαίδευσης
-        roi_idx=-1,  # Χρησιμοποιήστε το roi_idx αν χρειάζεται
-        num_epochs=500,  # Προσαρμόστε τον αριθμό των εποχών αν χρειάζεται
-        lr=0.01844  # Προσαρμόστε το learning rate αν χρειάζεται
+        train_x=data['train_x'],
+        train_y=data['train_y'],
+        num_epochs=500,  
+        lr=0.01844 
     )
     
     # Αποθήκευση του μοντέλου
@@ -301,7 +286,6 @@ def main():
         hidden_dim=args.hidden_dim,
         feature_dim=args.feature_dim
     )
-
 
     print("Training model...")
     t0 = time.time()

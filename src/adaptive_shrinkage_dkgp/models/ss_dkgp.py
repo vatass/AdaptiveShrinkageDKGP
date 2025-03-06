@@ -25,9 +25,9 @@ class SubjectSpecificDKGP(BaseDeepKernel):
         activation: str = 'relu',
         kernel: str = 'RBF',
         mean: str = 'constant',
-        learning_rate: float = 0.01,
+        learning_rate: float = 0.0184,
         weight_decay: float = 0.01,
-        n_epochs: int = 100,
+        n_epochs: int = 400,
         device: str = 'cuda' if torch.cuda.is_available() else 'cpu'
     ) -> None:
         """Initialize the subject-specific DKGP model.
@@ -62,16 +62,14 @@ class SubjectSpecificDKGP(BaseDeepKernel):
             kernel=kernel,
             mean=mean
         )
-        
         # Ensure consistent layer naming
         self.feature_extractor = LargeFeatureExtractor(
             datadim=input_dim,
-            depth=[(input_dim, int(input_dim/2))],  # Adjust depth as needed
+            depth=[(input_dim, int(input_dim/2))],  
             dr=dropout,
             activ=activation
         )
         
-
         if population_params is not None:
             adjusted_population_params = {k.replace('feature_extractor.', ''): v for k, v in population_params.items()}
             self.feature_extractor.load_state_dict(adjusted_population_params)
@@ -89,60 +87,82 @@ class SubjectSpecificDKGP(BaseDeepKernel):
         self,
         train_x: torch.Tensor,
         train_y: torch.Tensor,
-        val_x: Optional[torch.Tensor] = None,
-        val_y: Optional[torch.Tensor] = None,
-        verbose: bool = True
+        verbose: bool = True,
+        patience: int = 10,  # Παράμετρος για early stopping
+        min_delta: float = 1e-4  # Ελάχιστη βελτίωση για να θεωρηθεί πρόοδος
     ) -> Dict[str, list]:
         """Train the subject-specific DKGP model.
         
         Args:
             train_x: Training input data
             train_y: Training target data
-            val_x: Optional validation input data
-            val_y: Optional validation target data
             verbose: Whether to print training progress
+            patience: Number of epochs with no improvement after which training will be stopped
+            min_delta: Minimum change in loss to qualify as improvement
             
         Returns:
             Dictionary containing training history
         """
         self.train()
-        # Only optimize GP parameters, feature extractor is frozen
+        
+        # Ensure data is on the correct device
+        train_x = train_x.to(self.device)
+        train_y = train_y.to(self.device)
+        
+        # Only optimize GP parameters, feature extractor remains frozen
         optimizer = torch.optim.Adam([
             {'params': self.covar_module.parameters(), 'lr': self.learning_rate},
             {'params': self.mean_module.parameters(), 'lr': self.learning_rate},
             {'params': self.likelihood.parameters(), 'lr': self.learning_rate}
         ], weight_decay=self.weight_decay)
         
+        # Learning rate scheduler
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer, mode='min', factor=0.5, patience=5, verbose=verbose
+        )
+        
         mll = gpytorch.mlls.ExactMarginalLogLikelihood(self.likelihood, self)
         
         history = {
             'train_loss': [],
-            'val_loss': [] if val_x is not None else None
         }
         
-        # print(f'Starting training for {self.n_epochs} epochs with learning rate {self.learning_rate}')
+        # Early stopping variables
+        best_loss = float('inf')
+        no_improve_epochs = 0
         
         for epoch in range(self.n_epochs):
             optimizer.zero_grad()
             output = self(train_x)
             loss = -mll(output, train_y)
             loss.backward()
+            
+            # Gradient clipping to prevent exploding gradients
+            torch.nn.utils.clip_grad_norm_(self.parameters(), max_norm=1.0)
+            
             optimizer.step()
             
-            history['train_loss'].append(loss.item())
+            current_loss = loss.item()
+            history['train_loss'].append(current_loss)
             
-            if val_x is not None:
-                with torch.no_grad():
-                    val_output = self(val_x)
-                    val_loss = -mll(val_output, val_y)
-                    history['val_loss'].append(val_loss.item())
+            # Update learning rate based on loss
+            scheduler.step(current_loss)
             
-            if verbose:
-                print(f'Epoch {epoch+1}/{self.n_epochs} - Training Loss: {loss.item():.4f}')
+            # Early stopping check
+            if current_loss < best_loss - min_delta:
+                best_loss = current_loss
+                no_improve_epochs = 0
+            else:
+                no_improve_epochs += 1
+                
+            if no_improve_epochs >= patience:
+                if verbose:
+                    print(f"Early stopping at epoch {epoch+1}")
+                break
             
-            if val_x is not None and verbose:
-                print(f'Epoch {epoch+1}/{self.n_epochs} - Validation Loss: {val_loss.item():.4f}')
-        
+            if verbose and (epoch + 1) % 20 == 0:
+                print(f'Epoch {epoch+1}/{self.n_epochs} - Training Loss: {current_loss:.4f}')
+
         return history
     
     def unfreeze_feature_extractor(self) -> None:
