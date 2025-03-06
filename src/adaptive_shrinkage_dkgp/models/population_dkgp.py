@@ -75,7 +75,7 @@ class PopulationDKGP(BaseDeepKernel):
             train_y=train_y,
             likelihood=self.likelihood,
             depth = [(train_x.shape[1], int(train_x.shape[1]/2) )], 
-            dropout=0.1,  # Adjust dropout as needed
+            dropout=0.1,  # Dropout 0.1
             activation='relu',  # Adjust activation as needed
             pretrained=False,  # Adjust based on your needs
             latent_dim=feature_dim,
@@ -83,7 +83,7 @@ class PopulationDKGP(BaseDeepKernel):
             gphyper=None  # Adjust based on your needs
         ).to(device)
 
-    def fit(self, train_x, train_y, num_epochs=500, lr=0.01844, weight_decay=0.1):
+    def fit(self, train_x, train_y, num_epochs=500, lr=0.01844, weight_decay=0.01):
         """Train the population model."""
 
         # convert to tensor if not and move to gpu if not already

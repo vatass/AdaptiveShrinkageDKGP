@@ -87,9 +87,7 @@ class SubjectSpecificDKGP(BaseDeepKernel):
         self,
         train_x: torch.Tensor,
         train_y: torch.Tensor,
-        verbose: bool = True,
-        patience: int = 10,  # Παράμετρος για early stopping
-        min_delta: float = 1e-4  # Ελάχιστη βελτίωση για να θεωρηθεί πρόοδος
+        verbose: bool = True
     ) -> Dict[str, list]:
         """Train the subject-specific DKGP model.
         
@@ -97,8 +95,6 @@ class SubjectSpecificDKGP(BaseDeepKernel):
             train_x: Training input data
             train_y: Training target data
             verbose: Whether to print training progress
-            patience: Number of epochs with no improvement after which training will be stopped
-            min_delta: Minimum change in loss to qualify as improvement
             
         Returns:
             Dictionary containing training history
@@ -114,12 +110,7 @@ class SubjectSpecificDKGP(BaseDeepKernel):
             {'params': self.covar_module.parameters(), 'lr': self.learning_rate},
             {'params': self.mean_module.parameters(), 'lr': self.learning_rate},
             {'params': self.likelihood.parameters(), 'lr': self.learning_rate}
-        ], weight_decay=self.weight_decay)
-        
-        # Learning rate scheduler
-        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-            optimizer, mode='min', factor=0.5, patience=5, verbose=verbose
-        )
+        ], weight_decay= self.weight_decay )
         
         mll = gpytorch.mlls.ExactMarginalLogLikelihood(self.likelihood, self)
         
@@ -127,48 +118,21 @@ class SubjectSpecificDKGP(BaseDeepKernel):
             'train_loss': [],
         }
         
-        # Early stopping variables
-        best_loss = float('inf')
-        no_improve_epochs = 0
-        
-        for epoch in range(self.n_epochs):
+        for epoch in range( self.n_epochs): 
             optimizer.zero_grad()
             output = self(train_x)
             loss = -mll(output, train_y)
             loss.backward()
-            
-            # Gradient clipping to prevent exploding gradients
-            torch.nn.utils.clip_grad_norm_(self.parameters(), max_norm=1.0)
             
             optimizer.step()
             
             current_loss = loss.item()
             history['train_loss'].append(current_loss)
             
-            # Update learning rate based on loss
-            scheduler.step(current_loss)
-            
-            # Early stopping check
-            if current_loss < best_loss - min_delta:
-                best_loss = current_loss
-                no_improve_epochs = 0
-            else:
-                no_improve_epochs += 1
-                
-            if no_improve_epochs >= patience:
-                if verbose:
-                    print(f"Early stopping at epoch {epoch+1}")
-                break
-            
             if verbose and (epoch + 1) % 20 == 0:
-                print(f'Epoch {epoch+1}/{self.n_epochs} - Training Loss: {current_loss:.4f}')
+                print(f'Epoch {epoch+1}/400 - Training Loss: {current_loss:.4f}')
 
         return history
-    
-    def unfreeze_feature_extractor(self) -> None:
-        """Unfreeze the feature extractor parameters for fine-tuning."""
-        for param in self.feature_extractor.parameters():
-            param.requires_grad = True
     
     def save_model(self, path: str) -> None:
         """Save the model to disk.

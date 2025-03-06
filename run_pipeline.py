@@ -209,7 +209,8 @@ def train_population_model(
         train_x=data['train_x'],
         train_y=data['train_y'],
         num_epochs=500, 
-        lr=0.01844 
+        lr=0.01844,
+        weight_decay=0.01
     )
     
     # Save model
@@ -258,15 +259,20 @@ def train_adaptive_shrinkage(
     # Initialize and train subject-specific models for validation subjects
     y_ss_list, V_ss_list, y_pp_list, V_pp_list, n_obs_list, T_obs_list, oracle_alpha_list = [], [], [], [], [], [], []
     for subject_id in val_ids:
-
+        print(f'Training subject-specific model for subject {subject_id}...')
         start_idx = val_subject_indices[subject_id][0]
         end_idx = val_subject_indices[subject_id][1]
 
         subject_data_x = data['val_x'][start_idx:end_idx+1]
         subject_data_y = data['val_y'][start_idx:end_idx+1]
     
-        for i in range(1, subject_data_x.shape[0] - 1):  # Start from the second observation to the second to last
 
+        print(f'Subject data x: {subject_data_x.shape}')
+        print(f'Subject data y: {subject_data_y.shape}')
+
+        for i in range(1, subject_data_x.shape[0] - 1):  # Start from the second observation to the second to last
+            
+            print(f'Training subject-specific model for subject {subject_id} with {i} observations...')
             # Get subject data up to current observation for training the subject-specific model
             x_sub_observed = data['val_x'][:i+1]
             y_sub_observed = data['val_y'][:i+1] 
@@ -278,9 +284,9 @@ def train_adaptive_shrinkage(
                 input_dim=pop_model.input_dim,
                 latent_dim=pop_model.latent_dim,
                 population_params=pop_model.get_deep_params(),
-                learning_rate=0.01,  # Αυξημένος ρυθμός μάθησης
-                n_epochs=200,        # Αυξημένος αριθμός εποχών
-                weight_decay=0.01    # Μειωμένο weight decay
+                learning_rate=0.01844,  # Ακριβής ρυθμός μάθησης
+                weight_decay=0.01,      # Weight decay
+                n_epochs=400            # Αριθμός εποχών
             )
             
             # Εκπαίδευση με παρακολούθηση της απώλειας
