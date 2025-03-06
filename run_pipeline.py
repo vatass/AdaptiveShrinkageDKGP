@@ -19,8 +19,8 @@ from src.adaptive_shrinkage_dkgp.models.alpha_models import optimize_alpha_with_
 
 def load_and_preprocess_data(
     data_path: str,
-    train_size: float = 0.6,
-    val_size: float = 0.1,
+    train_size: float = 0.7,
+    val_size: float = 0.05,
     random_state: int = 42, 
     target: str = 'ROI_48'
 ) -> Tuple[Dict[str, torch.Tensor], List[str], List[str], List[str], Dict[str, Tuple[int, int]], Dict[str, Tuple[int, int]], Dict[str, Tuple[int, int]]]:
@@ -97,9 +97,9 @@ def load_and_preprocess_data(
         random_state=random_state
     )
     
-    # print(f'Train IDs: {len(train_ids)}')
-    # print(f'Val IDs: {len(val_ids)}')
-    # print(f'Test IDs: {len(test_ids)}')
+    print(f'Train IDs: {len(train_ids)}')
+    print(f'Val IDs: {len(val_ids)}')
+    print(f'Test IDs: {len(test_ids)}')
     
     # Extract data for each set
     def extract_data(ids):
@@ -219,27 +219,30 @@ def train_population_model(
     
     return model
 
-def train_adaptive_shrinkage(
+def create_oracle_dataset(
     pop_model: PopulationDKGP,
     data: Dict[str, torch.Tensor],
-    model_save_path: str,
-    weights_save_path: str,
     val_ids: List[str],
-    val_subject_indices: Dict[str, Tuple[int, int]]
-) -> AdaptiveShrinkage:
-    """Train the adaptive shrinkage estimator.
+    val_subject_indices: Dict[str, Tuple[int, int]],
+    output_path: str,
+    target: str = 'ROI_48'
+) -> Dict[str, torch.Tensor]:
+    """Create oracle dataset for adaptive shrinkage training.
     
     Args:
         pop_model: Trained population model
         data: Dictionary containing data tensors
-        model_save_path: Path to save the model
         val_ids: List of validation subject IDs
-        val_subject_indices: Dictionary mapping subject IDs to their start and end indices in the data
+        val_subject_indices: Dictionary mapping validation subject IDs to their start and end indices
+        output_path: Path to save the oracle dataset
+        target: Target biomarker name
+        
     Returns:
-        Trained adaptive shrinkage model
+        Dictionary containing oracle dataset tensors
     """
-    print("Training adaptive shrinkage estimator...")
     
+    print("Creating oracle dataset...")
+     
     # Set publication-quality plot parameters
     plt.rcParams.update({
         'font.size': 14,
@@ -256,8 +259,25 @@ def train_adaptive_shrinkage(
         'savefig.pad_inches': 0.1
     })
     
+    # Check if oracle dataset already exists
+    oracle_dataset_path = os.path.join(output_path, f'oracle_dataset_{target}.pt')
+    oracle_csv_path = os.path.join(output_path, f'oracle_dataset_{target}.csv')
+    
+    if os.path.exists(oracle_dataset_path):
+        print(f"Oracle dataset found at {oracle_dataset_path}. Loading...")
+        oracle_dataset = torch.load(oracle_dataset_path)
+        print("Oracle dataset loaded successfully.")
+        return oracle_dataset
+    
     # Initialize and train subject-specific models for validation subjects
     y_ss_list, V_ss_list, y_pp_list, V_pp_list, n_obs_list, T_obs_list, oracle_alpha_list = [], [], [], [], [], [], []
+    
+    # Δημιουργία καταλόγου για τα αποτελέσματα αν δεν υπάρχει
+    os.makedirs(os.path.join(output_path, 'plots'), exist_ok=True)
+    
+    # Δημιουργία DataFrame για την αποθήκευση των αποτελεσμάτων
+    results_data = []
+    
     for subject_id in val_ids:
         print(f'Training subject-specific model for subject {subject_id}...')
         start_idx = val_subject_indices[subject_id][0]
@@ -266,16 +286,18 @@ def train_adaptive_shrinkage(
         subject_data_x = data['val_x'][start_idx:end_idx+1]
         subject_data_y = data['val_y'][start_idx:end_idx+1]
     
-
         print(f'Subject data x: {subject_data_x.shape}')
         print(f'Subject data y: {subject_data_y.shape}')
 
         for i in range(1, subject_data_x.shape[0] - 1):  # Start from the second observation to the second to last
             
-            print(f'Training subject-specific model for subject {subject_id} with {i} observations...')
+            print(f'Training subject-specific model for subject {subject_id} with {i+1} observations...')
             # Get subject data up to current observation for training the subject-specific model
-            x_sub_observed = data['val_x'][:i+1]
-            y_sub_observed = data['val_y'][:i+1] 
+            x_sub_observed = subject_data_x[:i+1]  # Χρησιμοποιούμε τα δεδομένα του συγκεκριμένου υποκειμένου
+            y_sub_observed = subject_data_y[:i+1]  # Χρησιμοποιούμε τα δεδομένα του συγκεκριμένου υποκειμένου
+
+            print(f'x_sub_observed: {x_sub_observed.shape}')
+            print(f'y_sub_observed: {y_sub_observed.shape}')
 
             # Train subject-specific model
             ss_model = SubjectSpecificDKGP(
@@ -305,10 +327,17 @@ def train_adaptive_shrinkage(
 
             # Get predictions for the whole trajectory
             y_ss, _, _, V_ss = ss_model.predict(subject_data_x)
-
+            
+            # Εκτύπωση στατιστικών για να βεβαιωθούμε ότι το μοντέλο αλλάζει
+            print(f"Predictions summary for subject {subject_id} with {i+1} observations:")
+            print(f"  Population model - Mean: {y_pp.mean().item():.4f}, Std: {y_pp.std().item():.4f}")
+            print(f"  Subject-specific model - Mean: {y_ss.mean().item():.4f}, Std: {y_ss.std().item():.4f}")
+            print(f"  Ground truth - Mean: {y_true.mean().item():.4f}, Std: {y_true.std().item():.4f}")
+            
             # Convert to numpy for plotting
-            y_true_np = y_true.cpu().numpy()
-            y_ss_np = y_ss.cpu().numpy()
+            y_true_np = y_true.cpu().numpy() if isinstance(y_true, torch.Tensor) else y_true
+            y_pp_np = y_pp.cpu().numpy() if isinstance(y_pp, torch.Tensor) else y_pp
+            y_ss_np = y_ss.cpu().numpy() if isinstance(y_ss, torch.Tensor) else y_ss
             
             # Calculate confidence intervals (2 standard deviations)
             if isinstance(V_ss, np.ndarray):
@@ -320,7 +349,7 @@ def train_adaptive_shrinkage(
             lower_bound = y_ss_np - 1.96 * std_ss
             
             # Get time values
-            time = subject_data_x[:, -1].cpu().numpy()
+            time = subject_data_x[:, -1].cpu().numpy() if isinstance(subject_data_x, torch.Tensor) else subject_data_x[:, -1]
             
             # Plot trajectories with confidence intervals
             fig, ax = plt.subplots(figsize=(10, 6))
@@ -351,8 +380,17 @@ def train_adaptive_shrinkage(
             
             # Save figure
             plt.tight_layout()
-            plt.savefig(f'results/subject_{subject_id}_trajectory_obs_{i}.png')
+            plt.savefig(os.path.join(output_path, 'plots', f'subject_{subject_id}_trajectory_obs_{i}.png'))
             plt.close()
+            
+            # Υπολογισμός σφαλμάτων για κάθε μοντέλο
+            mse_pop = ((y_pp_np - y_true_np) ** 2).mean()
+            mse_ss = ((y_ss_np - y_true_np) ** 2).mean()
+            
+            # Εκτύπωση των σφαλμάτων
+            print(f"  MSE Population: {mse_pop:.4f}")
+            print(f"  MSE Subject-Specific: {mse_ss:.4f}")
+            print(f"  Improvement: {(mse_pop - mse_ss) / mse_pop * 100:.2f}%")
             
             y_ss_list.append(y_ss)
             V_ss_list.append(V_ss)
@@ -362,23 +400,95 @@ def train_adaptive_shrinkage(
             T_obs_list.append(subject_data_x[-1, -1])
 
             # find the oracle alpha for this predicted y_ss, y_pp and y_true    
-            oracle_alpha =  optimize_alpha_with_subject_simple(y_pp, y_ss, y_true)
-
+            oracle_alpha = optimize_alpha_with_subject_simple(y_pp, y_ss, y_true)
+            
+            # Υπολογισμός σφαλμάτων για κάθε μοντέλο
+            # Μετατροπή σε numpy arrays αν είναι tensors
+            y_true_np = y_true.cpu().numpy() if isinstance(y_true, torch.Tensor) else y_true
+            y_pp_np = y_pp.cpu().numpy() if isinstance(y_pp, torch.Tensor) else y_pp
+            y_ss_np = y_ss.cpu().numpy() if isinstance(y_ss, torch.Tensor) else y_ss
+            
+            mse_pop = ((y_pp_np - y_true_np) ** 2).mean()
+            mse_ss = ((y_ss_np - y_true_np) ** 2).mean()
+            
+            # Επαλήθευση της συμπεριφοράς του oracle alpha
+            print(f"Subject {subject_id}, Obs {i+1}:")
+            print(f"  MSE Population: {mse_pop:.4f}")
+            print(f"  MSE Subject-Specific: {mse_ss:.4f}")
+            print(f"  Oracle Alpha: {oracle_alpha:.4f}")
+            
             oracle_alpha_list.append(oracle_alpha)
+            
+            # Αποθήκευση των αποτελεσμάτων στο DataFrame
+            results_data.append({
+                'subject_id': subject_id,
+                'n_observations': i + 1,
+                'mse_population': mse_pop,
+                'mse_subject_specific': mse_ss,
+                'oracle_alpha': oracle_alpha,
+                'time_point': subject_data_x[-1, -1].item() if isinstance(subject_data_x, torch.Tensor) else subject_data_x[-1, -1]
+            })
 
-    # Create oracle dataset
+    # Δημιουργία του oracle dataset
     oracle_dataset = {
-        'y_pp': torch.cat(y_pp_list),
-        'V_pp': torch.cat(V_pp_list),
-        'y_ss': torch.cat(y_ss_list),
-        'V_ss': torch.cat(V_ss_list),
-        'T_obs': torch.cat(T_obs_list),
+        'y_pp': torch.stack([torch.tensor(y) for y in y_pp_list]),
+        'V_pp': torch.stack([torch.tensor(V) for V in V_pp_list]),
+        'y_ss': torch.stack([torch.tensor(y) for y in y_ss_list]),
+        'V_ss': torch.stack([torch.tensor(V) for V in V_ss_list]),
+        'T_obs': torch.tensor(T_obs_list),
         'oracle_alpha': torch.tensor(oracle_alpha_list)
     }
+    
+    # Αποθήκευση του oracle dataset
+    torch.save(oracle_dataset, oracle_dataset_path)
+    
+    # Αποθήκευση των αποτελεσμάτων σε CSV
+    results_df = pd.DataFrame(results_data)
+    results_df.to_csv(oracle_csv_path, index=False)
+    
+    print(f"Oracle dataset saved to {oracle_dataset_path}")
+    print(f"Oracle dataset results saved to {oracle_csv_path}")
+    
+    return oracle_dataset
 
-    print('Oracle Dataset is created!')
-    sys.exit(0)
-
+def train_adaptive_shrinkage(
+    pop_model: PopulationDKGP,
+    data: Dict[str, torch.Tensor],
+    model_save_path: str,
+    weights_save_path: str,
+    val_ids: List[str],
+    val_subject_indices: Dict[str, Tuple[int, int]],
+    output_path: str = 'results',
+    target: str = 'ROI_48'
+) -> AdaptiveShrinkage:
+    """Train the adaptive shrinkage estimator.
+    
+    Args:
+        pop_model: Trained population model
+        data: Dictionary containing data tensors
+        model_save_path: Path to save the trained model
+        weights_save_path: Path to save the model weights
+        val_ids: List of validation subject IDs
+        val_subject_indices: Dictionary mapping validation subject IDs to their start and end indices
+        output_path: Path to save the oracle dataset and results
+        target: Target biomarker name
+        
+    Returns:
+        Trained adaptive shrinkage estimator
+    """
+    print("Training adaptive shrinkage estimator...")
+    
+    # Create or load oracle dataset
+    oracle_dataset = create_oracle_dataset(
+        pop_model=pop_model,
+        data=data,
+        val_ids=val_ids,
+        val_subject_indices=val_subject_indices,
+        output_path=output_path,
+        target=target
+    )
+    
+    # Train adaptive shrinkage model
     shrinkage = AdaptiveShrinkage()
     shrinkage.fit(oracle_dataset)
     
@@ -697,10 +807,12 @@ def main():
     adaptive_shrinkage_estimator = train_adaptive_shrinkage(
         pop_model,
         data,
-        os.path.join(model_dir, "adaptive_shrinkage.json"),
-        os.path.join(model_dir, "adaptive_shrinkage_weights.json"), 
-        val_ids,
-        val_subject_indices
+        model_save_path=os.path.join(model_dir, "adaptive_shrinkage.json"),
+        weights_save_path=os.path.join(model_dir, "adaptive_shrinkage_weights.json"), 
+        val_ids=val_ids,
+        val_subject_indices=val_subject_indices,
+        output_path=results_dir,
+        target='ROI_48'  # Προσαρμόστε αυτό ανάλογα με το biomarker που χρησιμοποιείτε
     )
     
     # Evaluate personalization

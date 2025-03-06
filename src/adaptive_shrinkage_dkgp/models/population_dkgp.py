@@ -199,7 +199,6 @@ class PopulationDKGP(BaseDeepKernel):
         for param_name, param in self.model.named_parameters():
             if param_name.startswith('feature_extractor'):
                 feature_extractor_params[param_name] = param
-        print(feature_extractor_params)
         return feature_extractor_params
 
 

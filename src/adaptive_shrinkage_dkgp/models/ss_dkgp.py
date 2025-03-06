@@ -129,7 +129,7 @@ class SubjectSpecificDKGP(BaseDeepKernel):
             current_loss = loss.item()
             history['train_loss'].append(current_loss)
             
-            if verbose and (epoch + 1) % 20 == 0:
+            if verbose and (epoch + 1) % 50 == 0:
                 print(f'Epoch {epoch+1}/400 - Training Loss: {current_loss:.4f}')
 
         return history
