@@ -168,4 +168,4 @@ If you use this code in your research, please cite our paper:
 
 ## Contact
 
-For questions about the code or paper, please open an issue or contact [your contact information].
+For questions about the code or paper, please open an issue or contact tassopoulouvasiliki@gmail.com. 
