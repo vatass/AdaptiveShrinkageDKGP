@@ -27,17 +27,17 @@ The Adaptive Shrinkage Deep Kernel Gaussian Process (AS-DKGP) framework consists
 
 For a new subject with limited observations, we combine the population and subject-specific predictions:
 
-$$\hat{y}_{\text{combined}} = \alpha \cdot \hat{y}_{\text{population}} + (1 - \alpha) \cdot \hat{y}_{\text{subject-specific}}$$
+**ŷ<sub>combined</sub> = α · ŷ<sub>population</sub> + (1 - α) · ŷ<sub>subject-specific</sub>**
 
-where $\alpha \in [0, 1]$ is the shrinkage parameter learned by our model.
+where α ∈ [0, 1] is the shrinkage parameter learned by our model.
 
 ## Problem Description
 
 We address the problem of predicting biomarker trajectories, modeled as a one-dimensional signal spanning multiple years. The prediction framework is defined as follows:
 
 - **Function**: f : U → Y, where:
-  - U ∈ RK (input space)
-  - Y ∈ R (output space)
+  - U ∈ ℝ<sup>K</sup> (input space)
+  - Y ∈ ℝ (output space)
 
 - **Input Components** (U):
   - X: Imaging features (145 ROIs)
