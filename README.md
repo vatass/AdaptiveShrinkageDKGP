@@ -23,7 +23,7 @@ The Adaptive Shrinkage Deep Kernel Gaussian Process (AS-DKGP) framework consists
 
 1. **Population-level DKGP Model**: A deep kernel Gaussian process trained on data from all subjects in the training set.
 2. **Subject-Specific DKGP Model**: A personalized model trained on individual subject data.
-3. **Adaptive Shrinkage Estimator**: A meta-model that learns to optimally combine predictions from the population and subject-specific models.
+3. **Adaptive Shrinkage Estimator**: Adaptive Shrinkage Estimation to combine predictions from the population and subject-specific models.
 
 For a new subject with limited observations, we combine the population and subject-specific predictions:
 
