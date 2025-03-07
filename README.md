@@ -9,6 +9,22 @@ This repository contains the official implementation of the paper:
 
 This project implements an adaptive shrinkage estimation framework for personalized deep kernel regression, specifically designed for modeling individual brain trajectories. The method combines population-level deep kernel Gaussian processes with subject-specific models using Adaptive Shrinkage Estimation.
 
+For a detailed description of the method, please refer to our [method description document](docs/method_description.pdf).
+
+## Method Summary
+
+The Adaptive Shrinkage Deep Kernel Gaussian Process (AS-DKGP) framework consists of three main components:
+
+1. **Population-level DKGP Model**: A deep kernel Gaussian process trained on data from all subjects in the training set.
+2. **Subject-Specific DKGP Model**: A personalized model trained on individual subject data.
+3. **Adaptive Shrinkage Estimator**: A meta-model that learns to optimally combine predictions from the population and subject-specific models.
+
+For a new subject with limited observations, we combine the population and subject-specific predictions:
+
+$$\hat{y}_{\text{combined}} = \alpha \cdot \hat{y}_{\text{population}} + (1 - \alpha) \cdot \hat{y}_{\text{subject-specific}}$$
+
+where $\alpha \in [0, 1]$ is the shrinkage parameter learned by our model.
+
 ## Problem Description
 
 We address the problem of predicting biomarker trajectories, modeled as a one-dimensional signal spanning multiple years. The prediction framework is defined as follows:
