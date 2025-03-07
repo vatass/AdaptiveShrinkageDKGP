@@ -7,10 +7,15 @@ import numpy as np
 import torch
 import pandas as pd
 from sklearn.model_selection import train_test_split
-from typing import Tuple, Dict, List
+from typing import Tuple, Dict, List, Optional, Union
 import pickle
 import matplotlib.pyplot as plt
 import seaborn as sns
+from sklearn.metrics import mean_squared_error
+from sklearn.model_selection import GridSearchCV
+from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
+import json
+import xgboost as xgb
 
 from src.adaptive_shrinkage_dkgp.models.population_dkgp import PopulationDKGP
 from src.adaptive_shrinkage_dkgp.models.ss_dkgp import SubjectSpecificDKGP
@@ -431,12 +436,12 @@ def create_oracle_dataset(
 
     # Δημιουργία του oracle dataset
     oracle_dataset = {
-        'y_pp': torch.stack([torch.tensor(y) for y in y_pp_list]),
-        'V_pp': torch.stack([torch.tensor(V) for V in V_pp_list]),
-        'y_ss': torch.stack([torch.tensor(y) for y in y_ss_list]),
-        'V_ss': torch.stack([torch.tensor(V) for V in V_ss_list]),
-        'T_obs': torch.tensor(T_obs_list),
-        'oracle_alpha': torch.tensor(oracle_alpha_list)
+        'y_pp': torch.cat([torch.tensor(y).view(1, -1) for y in y_pp_list]),
+        'V_pp': torch.cat([torch.tensor(V).view(1, -1) for V in V_pp_list]),
+        'y_ss': torch.cat([torch.tensor(y).view(1, -1) for y in y_ss_list]),
+        'V_ss': torch.cat([torch.tensor(V).view(1, -1) for V in V_ss_list]),
+        'T_obs': torch.tensor(T_obs_list).view(-1, 1),
+        'oracle_alpha': torch.tensor(oracle_alpha_list).view(-1, 1)
     }
     
     # Αποθήκευση του oracle dataset
@@ -488,12 +493,113 @@ def train_adaptive_shrinkage(
         target=target
     )
     
-    # Train adaptive shrinkage model
-    shrinkage = AdaptiveShrinkage()
-    shrinkage.fit(oracle_dataset)
+    # Split the oracle dataset into training and validation sets
+    print("Splitting oracle dataset into training and validation sets...")
     
-    # Save model
+    # Μετατροπή των tensors σε numpy arrays
+    y_pp = oracle_dataset['y_pp'].numpy()
+    V_pp = oracle_dataset['V_pp'].numpy()
+    y_ss = oracle_dataset['y_ss'].numpy()
+    V_ss = oracle_dataset['V_ss'].numpy()
+    T_obs = oracle_dataset['T_obs'].numpy()
+    oracle_alpha = oracle_dataset['oracle_alpha'].numpy()
+    
+    # Δημιουργία του X (features) και y (target)
+    X = np.column_stack([y_pp, V_pp, y_ss, V_ss, T_obs])
+    y = oracle_alpha
+    
+    # Διαχωρισμός σε σύνολα εκπαίδευσης και επικύρωσης (80% train, 20% validation)
+    X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=0.2, random_state=42)
+    
+    print(f"Training set size: {X_train.shape[0]}, Validation set size: {X_val.shape[0]}")
+    
+    # Hyperparameter tuning
+    print("Performing hyperparameter tuning...")
+    
+    # Ορισμός των υπερπαραμέτρων για βελτιστοποίηση
+    param_grid = {
+        'n_estimators': [50, 100, 200],
+        'learning_rate': [0.01, 0.05, 0.1],
+        'max_depth': [3, 4, 5],
+        'subsample': [0.7, 0.8, 0.9]
+    }
+    
+    # Δημιουργία του μοντέλου XGBoost για βελτιστοποίηση
+    xgb_model = xgb.XGBRegressor(random_state=42)
+    
+    # Εκτέλεση της βελτιστοποίησης υπερπαραμέτρων με 5-fold cross-validation
+    grid_search = GridSearchCV(
+        estimator=xgb_model,
+        param_grid=param_grid,
+        cv=5,
+        scoring='neg_mean_squared_error',
+        verbose=1,
+        n_jobs=-1
+    )
+    
+    grid_search.fit(X_train, y_train)
+    
+    # Εμφάνιση των βέλτιστων υπερπαραμέτρων
+    print(f"Best parameters: {grid_search.best_params_}")
+    print(f"Best cross-validation score: {-grid_search.best_score_:.4f} MSE")
+    
+    # Αξιολόγηση του μοντέλου στο σύνολο επικύρωσης
+    best_model = grid_search.best_estimator_
+    val_predictions = best_model.predict(X_val)
+    
+    # Υπολογισμός μετρικών αξιολόγησης
+    mse = mean_squared_error(y_val, val_predictions)
+    mae = mean_absolute_error(y_val, val_predictions)
+    r2 = r2_score(y_val, val_predictions)
+    
+    print(f"Validation MSE: {mse:.4f}")
+    print(f"Validation MAE: {mae:.4f}")
+    print(f"Validation R²: {r2:.4f}")
+    
+    # Οπτικοποίηση των προβλέψεων έναντι των πραγματικών τιμών
+    plt.figure(figsize=(10, 6))
+    plt.scatter(y_val, val_predictions, alpha=0.7)
+    plt.plot([y_val.min(), y_val.max()], [y_val.min(), y_val.max()], 'k--', lw=2)
+    plt.xlabel('True Alpha Values')
+    plt.ylabel('Predicted Alpha Values')
+    plt.title('Adaptive Shrinkage Model Validation')
+    plt.grid(True, alpha=0.3)
+    plt.savefig(os.path.join(output_path, 'adaptive_shrinkage_validation.png'))
+    plt.close()
+    
+    # Οπτικοποίηση της σημαντικότητας των χαρακτηριστικών
+    feature_importance = best_model.feature_importances_
+    feature_names = ['Population Prediction', 'Population Variance', 
+                     'Subject-Specific Prediction', 'Subject-Specific Variance', 
+                     'Time Observation']
+    
+    plt.figure(figsize=(12, 6))
+    plt.barh(feature_names, feature_importance)
+    plt.xlabel('Feature Importance')
+    plt.title('Feature Importance in Adaptive Shrinkage Model')
+    plt.tight_layout()
+    plt.savefig(os.path.join(output_path, 'adaptive_shrinkage_feature_importance.png'))
+    plt.close()
+    
+    # Δημιουργία και εκπαίδευση του τελικού μοντέλου με τις βέλτιστες υπερπαραμέτρους
+    print("Training final adaptive shrinkage model...")
+    shrinkage = AdaptiveShrinkage(
+        n_estimators=grid_search.best_params_['n_estimators'],
+        learning_rate=grid_search.best_params_['learning_rate'],
+        max_depth=grid_search.best_params_['max_depth'],
+        subsample=grid_search.best_params_['subsample']
+    )
+    
+    # Εκπαίδευση του μοντέλου με όλα τα δεδομένα
+    shrinkage.model = best_model
+    
+    # Αποθήκευση του μοντέλου
+    print("Saving adaptive shrinkage model...")
     shrinkage.save_model(model_save_path)
+    
+    # Αποθήκευση των βέλτιστων υπερπαραμέτρων
+    with open(weights_save_path, 'w') as f:
+        json.dump(grid_search.best_params_, f)
     
     return shrinkage
 
