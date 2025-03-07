@@ -27,7 +27,7 @@ The Adaptive Shrinkage Deep Kernel Gaussian Process (AS-DKGP) framework consists
 
 For a new subject with limited observations, we combine the population and subject-specific predictions:
 
-**ŷ<sub>combined</sub> = α · ŷ<sub>population</sub> + (1 - α) · ŷ<sub>subject-specific</sub>**
+![equation](https://latex.codecogs.com/png.latex?\hat{y}_{\text{combined}}%20=%20\alpha%20\cdot%20\hat{y}_{\text{population}}%20+%20(1%20-%20\alpha)%20\cdot%20\hat{y}_{\text{subject-specific}})
 
 where α ∈ [0, 1] is the shrinkage parameter learned by our model.
 
