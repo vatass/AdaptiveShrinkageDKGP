@@ -11,6 +11,12 @@ This project implements an adaptive shrinkage estimation framework for personali
 
 For a detailed description of the method, please refer to our [method description document](docs/method_description.pdf).
 
+## Method Visualization
+
+![Adaptive Shrinkage Deep Kernel Gaussian Process Method](docs/method_visualization.png)
+
+*Figure: Overview of the Adaptive Shrinkage Deep Kernel Gaussian Process framework. The method combines population-level predictions with subject-specific predictions using an adaptive shrinkage parameter α, which is learned from data.*
+
 ## Method Summary
 
 The Adaptive Shrinkage Deep Kernel Gaussian Process (AS-DKGP) framework consists of three main components:
