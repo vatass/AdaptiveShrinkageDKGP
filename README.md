@@ -151,23 +151,6 @@ The pipeline generates:
    - MSE for population, subject-specific, and combined predictions
    - Performance analysis by number of observations
 
-## Citation
-
-If you use this code in your research, please cite our paper:
-
-```bibtex
-@inproceedings{
-    title={Adaptive Shrinkage Estimation for Personalized Deep Kernel Regression in Modeling Brain Trajectories},
-    author={[Author Names]},
-    booktitle={International Conference on Learning Representations},
-    year={2025}
-}
-```
-
-## License
-
-[Add your license information here]
-
 ## Contact
 
 For questions about the code or paper, please open an issue or contact tassopoulouvasiliki@gmail.com. 
