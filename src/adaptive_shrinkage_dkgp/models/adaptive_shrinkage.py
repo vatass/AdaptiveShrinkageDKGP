@@ -283,56 +283,119 @@ class AdaptiveShrinkage:
         self,
         pop_pred: Union[np.ndarray, torch.Tensor],
         ss_pred: Union[np.ndarray, torch.Tensor],
-        n_obs: Union[np.ndarray, torch.Tensor],
         pop_var: Optional[Union[np.ndarray, torch.Tensor]] = None,
-        ss_var: Optional[Union[np.ndarray, torch.Tensor]] = None
+        ss_var: Optional[Union[np.ndarray, torch.Tensor]] = None,
+        Tobs: Optional[Union[np.ndarray, torch.Tensor, float]] = None
     ) -> Union[np.ndarray, torch.Tensor]:
         """Predict optimal shrinkage weights and combine predictions.
         
         Args:
             pop_pred: Population model predictions
             ss_pred: Subject-specific model predictions
-            n_obs: Number of observations
-            pop_std: Optional population model prediction uncertainties
-            ss_std: Optional subject-specific model prediction uncertainties
+            pop_var: Optional population model prediction uncertainties
+            ss_var: Optional subject-specific model prediction uncertainties
+            Tobs: Optional time of last observation
             
         Returns:
             Combined predictions using learned shrinkage weights
         """
-        # Convert to numpy if needed
-        is_tensor = torch.is_tensor(pop_pred)
-        if is_tensor:
-            pop_pred = pop_pred.cpu().numpy()
-            ss_pred = ss_pred.cpu().numpy()
-            n_obs = n_obs.cpu().numpy()
-            if pop_var is not None:
-                pop_var = pop_var.cpu().numpy()
-            if ss_var is not None:
-                ss_var = ss_var.cpu().numpy()
+        # Check if inputs are tensors and convert to numpy if needed
+        is_tensor = False
+        device = None
+        
+        # Handle pop_pred
+        if torch.is_tensor(pop_pred):
+            is_tensor = True
+            device = pop_pred.device
+            pop_pred = pop_pred.detach().cpu().numpy()
+            
+        # Handle ss_pred
+        if torch.is_tensor(ss_pred):
+            is_tensor = True
+            if device is None and hasattr(ss_pred, 'device'):
+                device = ss_pred.device
+            ss_pred = ss_pred.detach().cpu().numpy()
+            
+        # Handle pop_var
+        if pop_var is not None and torch.is_tensor(pop_var):
+            if device is None and hasattr(pop_var, 'device'):
+                device = pop_var.device
+            pop_var = pop_var.detach().cpu().numpy()
+            
+        # Handle ss_var
+        if ss_var is not None and torch.is_tensor(ss_var):
+            if device is None and hasattr(ss_var, 'device'):
+                device = ss_var.device
+            ss_var = ss_var.detach().cpu().numpy()
+            
+        # Handle Tobs
+        if Tobs is not None and torch.is_tensor(Tobs):
+            if device is None and hasattr(Tobs, 'device'):
+                device = Tobs.device
+            Tobs = Tobs.detach().cpu().numpy()
         
         # Prepare features
-        features = [n_obs.reshape(-1, 1)]
+        features = []
+        
+        # Add population prediction (y_pp)
+        features.append(pop_pred.reshape(-1, 1))
+        
+        # Add subject-specific prediction (y_ss)
+        features.append(ss_pred.reshape(-1, 1))
+        
+        # Add population variance (V_pp) if available
         if pop_var is not None:
             features.append(pop_var.reshape(-1, 1))
+        else:
+            # If no variance, add zeros
+            features.append(np.zeros_like(pop_pred.reshape(-1, 1)))
+        
+        # Add subject-specific variance (V_ss) if available
         if ss_var is not None:
             features.append(ss_var.reshape(-1, 1))
+        else:
+            # If no variance, add zeros
+            features.append(np.zeros_like(ss_pred.reshape(-1, 1)))
+            
+        # Add time of last observation (Tobs) if available
+        if Tobs is not None:
+            # Convert scalar to array if needed
+            if isinstance(Tobs, (int, float)):
+                Tobs = np.array([Tobs] * len(pop_pred))
+            features.append(Tobs.reshape(-1, 1))
+        else:
+            # If no Tobs, add zeros
+            features.append(np.zeros_like(pop_pred.reshape(-1, 1)))
         
-
-        T_obs = T_obs.reshape(-1, 1)
-        features.append(T_obs)
-
-        # features sequence should be y_pp, V_pp, y_ss, V_ss, T_obs
+        # We use 5 features in this sequence: y_pp, y_ss, V_pp, V_ss, Tobs
+        
+        # features sequence should be y_pp, y_ss, V_pp, V_ss, Tobs
         X = np.hstack(features)
-        print(X.shape)
+        print(f"Feature matrix shape: {X.shape}")
+        
         # Predict weights
         adaptive_shrinkage_alpha = self.model.predict(X)
-        print(adaptive_shrinkage_alpha.shape)
+        print(f"Alpha shape: {adaptive_shrinkage_alpha.shape}")
+
+        # take the mean of the adaptive_shrinkage_alpha
+        adaptive_shrinkage_alpha = np.mean(adaptive_shrinkage_alpha)
 
         # Combine predictions
         personalized_pred = adaptive_shrinkage_alpha * pop_pred + (1 - adaptive_shrinkage_alpha) * ss_pred
-        personalized_pred_var = np.sqrt(adaptive_shrinkage_alpha * pop_var**2 + (1 - adaptive_shrinkage_alpha) * ss_var**2)
-
-        return personalized_pred, personalized_pred_var, adaptive_shrinkage_alpha
+        
+        # Calculate combined variance
+        if pop_var is not None and ss_var is not None:
+            personalized_var = adaptive_shrinkage_alpha**2 * pop_var + (1 - adaptive_shrinkage_alpha)**2 * ss_var
+        else:
+            personalized_var = np.zeros_like(personalized_pred)
+        
+        # Convert back to tensor if input was tensor
+        if is_tensor and device is not None:
+            personalized_pred = torch.tensor(personalized_pred, device=device)
+            personalized_var = torch.tensor(personalized_var, device=device)
+            adaptive_shrinkage_alpha = torch.tensor(adaptive_shrinkage_alpha, device=device)
+        
+        return personalized_pred, personalized_var, adaptive_shrinkage_alpha
     
     def save_model(self, path: str) -> None:
         """Save the XGBoost model to disk.

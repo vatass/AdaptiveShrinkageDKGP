@@ -16,6 +16,8 @@ from sklearn.model_selection import GridSearchCV
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 import json
 import xgboost as xgb
+from scipy.optimize import minimize_scalar
+import time
 
 from src.adaptive_shrinkage_dkgp.models.population_dkgp import PopulationDKGP
 from src.adaptive_shrinkage_dkgp.models.ss_dkgp import SubjectSpecificDKGP
@@ -25,7 +27,7 @@ from src.adaptive_shrinkage_dkgp.models.alpha_models import optimize_alpha_with_
 def load_and_preprocess_data(
     data_path: str,
     train_size: float = 0.7,
-    val_size: float = 0.05,
+    val_size: float = 0.02,
     random_state: int = 42, 
     target: str = 'ROI_48'
 ) -> Tuple[Dict[str, torch.Tensor], List[str], List[str], List[str], Dict[str, Tuple[int, int]], Dict[str, Tuple[int, int]], Dict[str, Tuple[int, int]]]:
@@ -265,12 +267,14 @@ def create_oracle_dataset(
     })
     
     # Check if oracle dataset already exists
-    oracle_dataset_path = os.path.join(output_path, f'oracle_dataset_{target}.pt')
+    oracle_dataset_path = os.path.join(output_path, f'oracle_dataset_{target}.pkl')
     oracle_csv_path = os.path.join(output_path, f'oracle_dataset_{target}.csv')
     
     if os.path.exists(oracle_dataset_path):
-        print(f"Oracle dataset found at {oracle_dataset_path}. Loading...")
-        oracle_dataset = torch.load(oracle_dataset_path)
+        print(f"Loading oracle dataset from {oracle_dataset_path}")
+        # Φόρτωση του oracle dataset από το αρχείο pickle
+        with open(oracle_dataset_path, 'rb') as f:
+            oracle_dataset = pickle.load(f)
         print("Oracle dataset loaded successfully.")
         return oracle_dataset
     
@@ -331,7 +335,7 @@ def create_oracle_dataset(
             y_pp, _, _, V_pp = pop_model.predict(subject_data_x)
 
             # Get predictions for the whole trajectory
-            y_ss, _, _, V_ss = ss_model.predict(subject_data_x)
+            y_ss, _, _, V_ss = ss_model.predict(x_sub_observed)
             
             # Εκτύπωση στατιστικών για να βεβαιωθούμε ότι το μοντέλο αλλάζει
             print(f"Predictions summary for subject {subject_id} with {i+1} observations:")
@@ -339,22 +343,38 @@ def create_oracle_dataset(
             print(f"  Subject-specific model - Mean: {y_ss.mean().item():.4f}, Std: {y_ss.std().item():.4f}")
             print(f"  Ground truth - Mean: {y_true.mean().item():.4f}, Std: {y_true.std().item():.4f}")
             
-            # Convert to numpy for plotting
-            y_true_np = y_true.cpu().numpy() if isinstance(y_true, torch.Tensor) else y_true
-            y_pp_np = y_pp.cpu().numpy() if isinstance(y_pp, torch.Tensor) else y_pp
-            y_ss_np = y_ss.cpu().numpy() if isinstance(y_ss, torch.Tensor) else y_ss
+            # Μετατροπή σε numpy arrays για υπολογισμούς
+            y_pp_np = y_pp.cpu().numpy() if isinstance(y_pp, torch.Tensor) and y_pp.is_cuda else y_pp.numpy() if isinstance(y_pp, torch.Tensor) else y_pp
+            y_true_np = y_true.cpu().numpy() if isinstance(y_true, torch.Tensor) and y_true.is_cuda else y_true.numpy() if isinstance(y_true, torch.Tensor) else y_true
+            y_ss_np = y_ss.cpu().numpy() if isinstance(y_ss, torch.Tensor) and y_ss.is_cuda else y_ss.numpy() if isinstance(y_ss, torch.Tensor) else y_ss
             
+            # Υπολογισμός των MSE
+            mse_pop = ((y_pp_np - y_true_np) ** 2).mean()
+            mse_ss = ((y_ss_np - y_true_np) ** 2).mean()
+            
+            # Εκτύπωση των σφαλμάτων
+            print(f"  MSE Population: {mse_pop:.4f}")
+            print(f"  MSE Subject-Specific: {mse_ss:.4f}")
+            print(f"  Improvement: {(mse_pop - mse_ss) / mse_pop * 100:.2f}%")
+            
+            # Convert to numpy for plotting
             # Calculate confidence intervals (2 standard deviations)
             if isinstance(V_ss, np.ndarray):
                 std_ss = np.sqrt(V_ss)
+            elif isinstance(V_ss, torch.Tensor):
+                std_ss = torch.sqrt(V_ss)
+                std_ss = std_ss.cpu().numpy() if std_ss.is_cuda else std_ss.numpy()
             else:
-                std_ss = torch.sqrt(V_ss).cpu().numpy()
+                std_ss = np.sqrt(V_ss)
                 
             upper_bound = y_ss_np + 1.96 * std_ss
             lower_bound = y_ss_np - 1.96 * std_ss
             
             # Get time values
-            time = subject_data_x[:, -1].cpu().numpy() if isinstance(subject_data_x, torch.Tensor) else subject_data_x[:, -1]
+            if isinstance(x_sub_observed, torch.Tensor):
+                time = x_sub_observed[:, -1].cpu().numpy() if x_sub_observed.is_cuda else x_sub_observed[:, -1].numpy()
+            else:
+                time = x_sub_observed[:, -1]
             
             # Plot trajectories with confidence intervals
             fig, ax = plt.subplots(figsize=(10, 6))
@@ -388,33 +408,48 @@ def create_oracle_dataset(
             plt.savefig(os.path.join(output_path, 'plots', f'subject_{subject_id}_trajectory_obs_{i}.png'))
             plt.close()
             
-            # Υπολογισμός σφαλμάτων για κάθε μοντέλο
-            mse_pop = ((y_pp_np - y_true_np) ** 2).mean()
-            mse_ss = ((y_ss_np - y_true_np) ** 2).mean()
+            # Αποθήκευση των μέσων τιμών των προβλέψεων και των διακυμάνσεων
+            # Μετατροπή σε scalar τιμές
+            if isinstance(y_ss, torch.Tensor):
+                y_ss_mean = y_ss.mean().item()
+                V_ss_mean = V_ss.mean().item() if isinstance(V_ss, torch.Tensor) else float(V_ss.mean())
+            else:
+                y_ss_mean = float(y_ss.mean())
+                V_ss_mean = float(V_ss.mean())
+                
+            if isinstance(y_pp, torch.Tensor):
+                y_pp_mean = y_pp.mean().item()
+                V_pp_mean = V_pp.mean().item() if isinstance(V_pp, torch.Tensor) else float(V_pp.mean())
+            else:
+                y_pp_mean = float(y_pp.mean())
+                V_pp_mean = float(V_pp.mean())
             
-            # Εκτύπωση των σφαλμάτων
-            print(f"  MSE Population: {mse_pop:.4f}")
-            print(f"  MSE Subject-Specific: {mse_ss:.4f}")
-            print(f"  Improvement: {(mse_pop - mse_ss) / mse_pop * 100:.2f}%")
-            
-            y_ss_list.append(y_ss)
-            V_ss_list.append(V_ss)
-            y_pp_list.append(y_pp)
-            V_pp_list.append(V_pp)
+            # Προσθήκη των scalar τιμών στις λίστες
+            y_ss_list.append(y_ss_mean)
+            V_ss_list.append(V_ss_mean)
+            y_pp_list.append(y_pp_mean)
+            V_pp_list.append(V_pp_mean)
             n_obs_list.append(i + 1)
-            T_obs_list.append(subject_data_x[-1, -1])
+            # Διασφάλιση ότι προσθέτουμε έναν αριθμό και όχι έναν πίνακα
+            if isinstance(x_sub_observed, torch.Tensor):
+                time_value = x_sub_observed[-1, -1].item()
+            else:
+                time_value = x_sub_observed[-1, -1]
+            T_obs_list.append(time_value)
 
-            # find the oracle alpha for this predicted y_ss, y_pp and y_true    
-            oracle_alpha = optimize_alpha_with_subject_simple(y_pp, y_ss, y_true)
-            
-            # Υπολογισμός σφαλμάτων για κάθε μοντέλο
-            # Μετατροπή σε numpy arrays αν είναι tensors
-            y_true_np = y_true.cpu().numpy() if isinstance(y_true, torch.Tensor) else y_true
-            y_pp_np = y_pp.cpu().numpy() if isinstance(y_pp, torch.Tensor) else y_pp
-            y_ss_np = y_ss.cpu().numpy() if isinstance(y_ss, torch.Tensor) else y_ss
-            
-            mse_pop = ((y_pp_np - y_true_np) ** 2).mean()
-            mse_ss = ((y_ss_np - y_true_np) ** 2).mean()
+            # Υπολογισμός του oracle alpha με βάση τις μέσες τιμές
+            # Μετατροπή σε numpy arrays για υπολογισμούς
+            if isinstance(y_true, torch.Tensor):
+                y_true_mean = y_true.mean().item()
+            else:
+                y_true_mean = float(y_true.mean())
+                
+            # Υπολογισμός του oracle alpha με τις μέσες τιμές
+            oracle_alpha = optimize_alpha_with_subject_simple(
+                np.array([y_pp_mean]), 
+                np.array([y_ss_mean]), 
+                np.array([y_true_mean])
+            )
             
             # Επαλήθευση της συμπεριφοράς του oracle alpha
             print(f"Subject {subject_id}, Obs {i+1}:")
@@ -431,28 +466,52 @@ def create_oracle_dataset(
                 'mse_population': mse_pop,
                 'mse_subject_specific': mse_ss,
                 'oracle_alpha': oracle_alpha,
-                'time_point': subject_data_x[-1, -1].item() if isinstance(subject_data_x, torch.Tensor) else subject_data_x[-1, -1]
+                'time_point': x_sub_observed[-1, -1].item() if isinstance(x_sub_observed, torch.Tensor) else x_sub_observed[-1, -1]
             })
 
-    # Δημιουργία του oracle dataset
-    oracle_dataset = {
-        'y_pp': torch.cat([torch.tensor(y).view(1, -1) for y in y_pp_list]),
-        'V_pp': torch.cat([torch.tensor(V).view(1, -1) for V in V_pp_list]),
-        'y_ss': torch.cat([torch.tensor(y).view(1, -1) for y in y_ss_list]),
-        'V_ss': torch.cat([torch.tensor(V).view(1, -1) for V in V_ss_list]),
-        'T_obs': torch.tensor(T_obs_list).view(-1, 1),
-        'oracle_alpha': torch.tensor(oracle_alpha_list).view(-1, 1)
-    }
+    print(f"y_pp_list: {len(y_pp_list)}")
+    print(f"V_pp_list: {len(V_pp_list)}")
+    print(f"y_ss_list: {len(y_ss_list)}")
+    print(f"V_ss_list: {len(V_ss_list)}")
+    print(f"T_obs_list: {len(T_obs_list)}")
+    print(f"oracle_alpha_list: {len(oracle_alpha_list)}")
     
-    # Αποθήκευση του oracle dataset
-    torch.save(oracle_dataset, oracle_dataset_path)
+    # Μετατροπή των λιστών σε numpy arrays
+    # Τώρα που όλα τα στοιχεία είναι scalar, η μετατροπή είναι απλή
+    y_pp_array = np.array(y_pp_list)
+    V_pp_array = np.array(V_pp_list)
+    y_ss_array = np.array(y_ss_list)
+    V_ss_array = np.array(V_ss_list)
+    
+    # Για T_obs_list και oracle_alpha_list, που είναι πιο απλά
+    T_obs_array = np.array(T_obs_list)
+    oracle_alpha_array = np.array(oracle_alpha_list)
+    
+    # Συνδυασμός όλων των arrays σε έναν πίνακα Nx6
+    # Όπου το Nx5 είναι τα features και το Nx1 είναι το target
+    features = np.column_stack((y_pp_array, V_pp_array, y_ss_array, V_ss_array, T_obs_array))
+    
+    # Δημιουργία του oracle dataset ως numpy arrays
+    X = features  # Nx5 array με τα features
+    y = oracle_alpha_array  # Nx1 array με τα oracle alpha
+    
+    # Αποθήκευση του oracle dataset με pickle
+    oracle_dataset_path_np = os.path.join(output_path, f'oracle_dataset_{target}.pkl')
+    with open(oracle_dataset_path_np, 'wb') as f:
+        pickle.dump({'X': X, 'y': y}, f)
     
     # Αποθήκευση των αποτελεσμάτων σε CSV
     results_df = pd.DataFrame(results_data)
     results_df.to_csv(oracle_csv_path, index=False)
     
-    print(f"Oracle dataset saved to {oracle_dataset_path}")
+    print(f"Oracle dataset saved to {oracle_dataset_path_np}")
     print(f"Oracle dataset results saved to {oracle_csv_path}")
+    
+    # Επιστροφή του oracle dataset ως dictionary για συμβατότητα
+    oracle_dataset = {
+        'X': X,
+        'y': y
+    }
     
     return oracle_dataset
 
@@ -483,30 +542,31 @@ def train_adaptive_shrinkage(
     """
     print("Training adaptive shrinkage estimator...")
     
-    # Create or load oracle dataset
-    oracle_dataset = create_oracle_dataset(
-        pop_model=pop_model,
-        data=data,
-        val_ids=val_ids,
-        val_subject_indices=val_subject_indices,
-        output_path=output_path,
-        target=target
-    )
+    # Έλεγχος αν το oracle dataset υπάρχει ήδη
+    oracle_dataset_path = os.path.join(output_path, f'oracle_dataset_{target}.pkl')
+    
+    if os.path.exists(oracle_dataset_path):
+        print(f"Loading oracle dataset from {oracle_dataset_path}")
+        # Φόρτωση του oracle dataset από το αρχείο pickle
+        with open(oracle_dataset_path, 'rb') as f:
+            oracle_dataset = pickle.load(f)
+    else:
+        # Δημιουργία του oracle dataset
+        oracle_dataset = create_oracle_dataset(
+            pop_model=pop_model,
+            data=data,
+            val_ids=val_ids,
+            val_subject_indices=val_subject_indices,
+            output_path=output_path,
+            target=target
+        )
     
     # Split the oracle dataset into training and validation sets
     print("Splitting oracle dataset into training and validation sets...")
     
-    # Μετατροπή των tensors σε numpy arrays
-    y_pp = oracle_dataset['y_pp'].numpy()
-    V_pp = oracle_dataset['V_pp'].numpy()
-    y_ss = oracle_dataset['y_ss'].numpy()
-    V_ss = oracle_dataset['V_ss'].numpy()
-    T_obs = oracle_dataset['T_obs'].numpy()
-    oracle_alpha = oracle_dataset['oracle_alpha'].numpy()
-    
-    # Δημιουργία του X (features) και y (target)
-    X = np.column_stack([y_pp, V_pp, y_ss, V_ss, T_obs])
-    y = oracle_alpha
+    # Λήψη των X και y από το oracle dataset
+    X = oracle_dataset['X']  # Nx5 array με τα features
+    y = oracle_dataset['y']  # Nx1 array με τα oracle alpha
     
     # Διαχωρισμός σε σύνολα εκπαίδευσης και επικύρωσης (80% train, 20% validation)
     X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=0.2, random_state=42)
@@ -611,33 +671,48 @@ def evaluate_personalization(
     test_subject_indices: Dict[str, Tuple[int, int]],
     max_history: int = 10
 ) -> pd.DataFrame:
-    """Evaluate personalization on test subjects.
+    """Evaluate personalization performance on test subjects.
     
     Args:
         pop_model: Trained population model
         shrinkage: Trained adaptive shrinkage model
         data: Dictionary containing data tensors
         test_ids: List of test subject IDs
-        test_subject_indices: Dictionary mapping test subject IDs to their start and end indices
-        max_history: Maximum number of history points to consider
+        test_subject_indices: Dictionary mapping subject IDs to indices in the test data
+        max_history: Maximum number of observations to use for personalization
         
     Returns:
-        DataFrame with evaluation results
+        DataFrame containing evaluation results
     """
-    print("Evaluating personalization on test subjects...")
-
+    # Create results dictionary
     results = {
         'subject_id': [],
         'n_observations': [],
-        'T_obs': [],
         'mse_population': [],
         'mse_subject_specific': [],
         'mse_personalized': []
     }
     
-    # Store alpha values for plotting
+    # Create dictionary to store predictions
+    predictions_data = {
+        'subject_id': [],
+        'n_observations': [],
+        'time_point': [],
+        'true_value': [],
+        'population_pred': [],
+        'subject_specific_pred': [],
+        'personalized_pred': [],
+        'upper': [],  # Upper bound for confidence interval
+        'lower': [],  # Lower bound for confidence interval
+        'alpha': [],
+        'Model': [],  # For Plotly grouping
+        'History': [],  # For Plotly grouping
+        'time': []  # For Plotly x-axis
+    }
+    
+    # Store alpha values for analysis
     alpha_values = []
-
+    
     for subject_id in test_ids:
         print(f"Processing subject {subject_id}...")
         
@@ -646,7 +721,6 @@ def evaluate_personalization(
         x_subject = data['test_x'][start_idx:end_idx+1]
         y_subject = data['test_y'][start_idx:end_idx+1]
         
-
         # iterate over the number of observations
         for n_obs in range(1, min(len(x_subject), max_history + 1)):
 
@@ -655,6 +729,8 @@ def evaluate_personalization(
 
             T_obs = x_subject_history[n_obs-1, -1]
 
+            # create the Tobs_list
+            Tobs_list = torch.tensor([T_obs] * len(x_subject))
             # Get population predictions
             y_pp, _, _, V_pp = pop_model.predict(x_subject)
             
@@ -669,19 +745,29 @@ def evaluate_personalization(
             ss_model.fit(x_subject_history, y_subject_history, verbose=False)
             
             # Get predictions
-            y_ss,_, _, V_ss = ss_model.predict( )
+            y_ss, _, _, V_ss = ss_model.predict(x_subject)
             
             # Get combined predictions
             combined_pred, combined_var, alpha = shrinkage.predict(
                 pop_pred=y_pp,
                 ss_pred=y_ss,
-                n_obs=torch.tensor([n_obs] * len(x_subject)),
                 pop_var=V_pp,
-                ss_var=V_ss ,
-                T_obs=T_obs,
-                return_alpha=True  # Ensure the function returns alpha
+                ss_var=V_ss,
+                Tobs=Tobs_list
             )
      
+            # Ensure all variables are tensors for MSE calculation
+            if isinstance(y_pp, np.ndarray):
+                y_pp = torch.tensor(y_pp, device=y_subject.device)
+            if isinstance(y_ss, np.ndarray):
+                y_ss = torch.tensor(y_ss, device=y_subject.device)
+            if isinstance(combined_pred, np.ndarray):
+                combined_pred = torch.tensor(combined_pred, device=y_subject.device)
+            if isinstance(combined_var, np.ndarray):
+                combined_var = torch.tensor(combined_var, device=y_subject.device)
+            if isinstance(alpha, np.ndarray):
+                alpha = torch.tensor(alpha, device=y_subject.device)
+            
             # Calculate MSE
             mse_pop = ((y_pp - y_subject) ** 2).mean().item()
             mse_ss = ((y_ss - y_subject) ** 2).mean().item()
@@ -695,39 +781,99 @@ def evaluate_personalization(
             results['mse_personalized'].append(mse_combined)
 
             # Store alpha values
-            alpha_values.extend(alpha.cpu().numpy())
+            if alpha.ndim == 0:  # Handle scalar alpha
+                alpha_values.append(alpha.item())
+            else:
+                alpha_values.extend(alpha.cpu().numpy())
 
-            # Generate visuals for the current subject's predicted trajectory
-            plt.figure(figsize=(10, 6))
-            true_trajectory = y_subject.cpu().numpy()
-            predicted_trajectory = combined_pred.cpu().numpy()
-            prediction_var = combined_var.cpu().numpy()
-            prediction_std = np.sqrt(prediction_var)
+            # Store predictions for later plotting
+            for i in range(len(y_subject)):
+                # Store population model predictions
+                predictions_data['subject_id'].append(subject_id)
+                predictions_data['n_observations'].append(n_obs)
+                predictions_data['time_point'].append(i)
+                predictions_data['true_value'].append(y_subject[i].item())
+                predictions_data['population_pred'].append(y_pp[i].item())
+                predictions_data['subject_specific_pred'].append(y_ss[i].item())
+                predictions_data['personalized_pred'].append(combined_pred[i].item())
+                
+                # Calculate confidence intervals (95%)
+                std_dev = torch.sqrt(combined_var[i]).item()
+                predictions_data['upper'].append(combined_pred[i].item() + 1.96 * std_dev)
+                predictions_data['lower'].append(combined_pred[i].item() - 1.96 * std_dev)
+                
+                # Store alpha
+                if alpha.ndim == 0:  # Handle scalar alpha
+                    predictions_data['alpha'].append(alpha.item())
+                else:
+                    predictions_data['alpha'].append(alpha[i].item())
+                
+                # Add fields for Plotly
+                predictions_data['Model'].append('pers-DKGP (Alpha Simple)')
+                predictions_data['History'].append(n_obs)
+                predictions_data['time'].append(i)  # Use time_point as time for now
 
-            plt.plot(range(len(true_trajectory)), true_trajectory, label='True Trajectory')
-            plt.plot(range(len(predicted_trajectory)), predicted_trajectory, label='Predicted Trajectory')
-            plt.fill_between(range(len(predicted_trajectory)),
-                             predicted_trajectory - 1.96 * prediction_std,
-                             predicted_trajectory + 1.96 * prediction_std,
-                             alpha=0.2, label='Prediction Std')
-            plt.title(f'Subject {subject_id} Predicted Trajectory')
-            plt.xlabel('Time')
-            plt.ylabel('Value')
-            plt.legend()
-            plt.savefig(f'results/subject_{subject_id}_trajectory_obs_{n_obs}.png')
-            plt.close()
+    # Create results DataFrame
+    results_df = pd.DataFrame(results)
     
-    # Plot the distribution of alpha with the number of observations
+    # Also create a ground truth DataFrame for Plotly
+    groundtruth_data = {
+        'subject_id': [],
+        'time_point': [],
+        'time': [],
+        'y': []
+    }
+    
+    # Add ground truth data points
+    for subject_id in test_ids:
+        start_idx, end_idx = test_subject_indices[subject_id]
+        y_subject = data['test_y'][start_idx:end_idx+1]
+        
+        for i in range(len(y_subject)):
+            groundtruth_data['subject_id'].append(subject_id)
+            groundtruth_data['time_point'].append(i)
+            groundtruth_data['time'].append(i)  # Use time_point as time for now
+            groundtruth_data['y'].append(y_subject[i].item())
+    
+    groundtruth_df = pd.DataFrame(groundtruth_data)
+    
+    # Create predictions DataFrame
+    predictions_df = pd.DataFrame(predictions_data)
+    
+    # Save both DataFrames
+    os.makedirs('results', exist_ok=True)
+    predictions_df.to_csv('results/predictions_for_plotting.csv', index=False)
+    groundtruth_df.to_csv('results/groundtruth_for_plotting.csv', index=False)
+    print(f"Predictions saved to results/predictions_for_plotting.csv")
+    print(f"Ground truth saved to results/groundtruth_for_plotting.csv")
+    
+    # Calculate average MSE for each number of observations
+    avg_results = results_df.groupby('n_observations').mean().reset_index()
+    
+    # Plot average MSE vs number of observations
     plt.figure(figsize=(10, 6))
-    sns.boxplot(x=results['n_observations'], y=alpha_values)
-    plt.title('Distribution of Alpha with Number of Observations')
+    plt.plot(avg_results['n_observations'], avg_results['mse_population'], label='Population Model')
+    plt.plot(avg_results['n_observations'], avg_results['mse_subject_specific'], label='Subject-Specific Model')
+    plt.plot(avg_results['n_observations'], avg_results['mse_personalized'], label='Personalized Model')
     plt.xlabel('Number of Observations')
-    plt.ylabel('Alpha')
+    plt.ylabel('Mean Squared Error')
+    plt.title('Average MSE vs Number of Observations')
+    plt.legend()
+    plt.grid(True)
+    plt.savefig('results/average_mse.png')
+    plt.close()
+    
+    # Plot alpha distribution
+    plt.figure(figsize=(10, 6))
+    plt.hist(alpha_values, bins=20)
+    plt.xlabel('Alpha')
+    plt.ylabel('Frequency')
+    plt.title('Distribution of Alpha Values')
     plt.grid(True)
     plt.savefig('results/alpha_distribution.png')
     plt.close()
-
-    return pd.DataFrame(results)
+    
+    return results_df
 
 def evaluate_population_model(
     pop_model: PopulationDKGP,
@@ -867,6 +1013,145 @@ def save_model(self, model_path, weights_path):
     weights = self.model.feature_extractor.final_linear.weight.cpu().detach()
     print("Feature Importance Weights:", weights)
 
+def predict(
+    self,
+    pop_pred: Union[np.ndarray, torch.Tensor],
+    ss_pred: Union[np.ndarray, torch.Tensor],
+    n_obs: Union[np.ndarray, torch.Tensor],
+    pop_var: Optional[Union[np.ndarray, torch.Tensor]] = None,
+    ss_var: Optional[Union[np.ndarray, torch.Tensor]] = None
+) -> Union[np.ndarray, torch.Tensor]:
+    """Predict optimal shrinkage weights and combine predictions.
+    
+    Args:
+        pop_pred: Population model predictions
+        ss_pred: Subject-specific model predictions
+        n_obs: Number of observations
+        pop_var: Optional population model prediction uncertainties
+        ss_var: Optional subject-specific model prediction uncertainties
+        
+    Returns:
+        Combined predictions using learned shrinkage weights
+    """
+    # Convert to numpy if needed
+    is_tensor = torch.is_tensor(pop_pred)
+    if is_tensor:
+        pop_pred = pop_pred.cpu().numpy() if pop_pred.is_cuda else pop_pred.numpy()
+        ss_pred = ss_pred.cpu().numpy() if ss_pred.is_cuda else ss_pred.numpy()
+        n_obs = n_obs.cpu().numpy() if n_obs.is_cuda else n_obs.numpy()
+        if pop_var is not None:
+            pop_var = pop_var.cpu().numpy() if pop_var.is_cuda else pop_var.numpy()
+        if ss_var is not None:
+            ss_var = ss_var.cpu().numpy() if ss_var.is_cuda else ss_var.numpy()
+    
+    # Prepare features
+    # Διασφάλιση ότι τα δεδομένα έχουν τη σωστή μορφή
+    if isinstance(pop_pred, np.ndarray) and pop_pred.ndim > 1:
+        # Αν έχουμε πολυδιάστατα δεδομένα, παίρνουμε την πρώτη διάσταση
+        pop_pred_val = pop_pred[:, 0].reshape(-1, 1)
+        ss_pred_val = ss_pred[:, 0].reshape(-1, 1)
+        
+        if pop_var is not None:
+            pop_var_val = pop_var[:, 0].reshape(-1, 1)
+        if ss_var is not None:
+            ss_var_val = ss_var[:, 0].reshape(-1, 1)
+    else:
+        # Αν έχουμε μονοδιάστατα δεδομένα
+        pop_pred_val = pop_pred.reshape(-1, 1)
+        ss_pred_val = ss_pred.reshape(-1, 1)
+        
+        if pop_var is not None:
+            pop_var_val = pop_var.reshape(-1, 1)
+        if ss_var is not None:
+            ss_var_val = ss_var.reshape(-1, 1)
+    
+    # Δημιουργία του feature vector
+    features = []
+    features.append(pop_pred_val)
+    
+    if pop_var is not None:
+        features.append(pop_var_val)
+    else:
+        # Αν δεν έχουμε διακύμανση, προσθέτουμε μηδενικά
+        features.append(np.zeros_like(pop_pred_val))
+        
+    features.append(ss_pred_val)
+    
+    if ss_var is not None:
+        features.append(ss_var_val)
+    else:
+        # Αν δεν έχουμε διακύμανση, προσθέτουμε μηδενικά
+        features.append(np.zeros_like(ss_pred_val))
+        
+    # Προσθήκη του αριθμού παρατηρήσεων
+    n_obs_reshaped = n_obs.reshape(-1, 1) if isinstance(n_obs, np.ndarray) else np.array([[n_obs]])
+    features.append(n_obs_reshaped)
+    
+    # Συνένωση των features
+    X = np.hstack(features)
+    
+    # Πρόβλεψη των βαρών
+    adaptive_shrinkage_alpha = self.model.predict(X)
+    
+    # Διασφάλιση ότι το alpha είναι στο διάστημα [0, 1]
+    adaptive_shrinkage_alpha = np.clip(adaptive_shrinkage_alpha, 0, 1)
+    
+    # Συνδυασμός των προβλέψεων
+    if isinstance(pop_pred, np.ndarray) and pop_pred.ndim > 1:
+        # Αν έχουμε πολλαπλές προβλέψεις, εφαρμόζουμε το alpha σε κάθε πρόβλεψη
+        alpha_expanded = adaptive_shrinkage_alpha.reshape(-1, 1)
+        personalized_pred = alpha_expanded * pop_pred + (1 - alpha_expanded) * ss_pred
+        
+        if pop_var is not None and ss_var is not None:
+            personalized_pred_var = alpha_expanded**2 * pop_var + (1 - alpha_expanded)**2 * ss_var
+        else:
+            personalized_pred_var = None
+    else:
+        # Αν έχουμε μονοδιάστατα δεδομένα
+        personalized_pred = adaptive_shrinkage_alpha * pop_pred + (1 - adaptive_shrinkage_alpha) * ss_pred
+        
+        if pop_var is not None and ss_var is not None:
+            personalized_pred_var = adaptive_shrinkage_alpha**2 * pop_var + (1 - adaptive_shrinkage_alpha)**2 * ss_var
+        else:
+            personalized_pred_var = None
+    
+    # Επιστροφή των αποτελεσμάτων ως tensor αν τα δεδομένα εισόδου ήταν tensors
+    if is_tensor:
+        personalized_pred = torch.from_numpy(personalized_pred)
+        if personalized_pred_var is not None:
+            personalized_pred_var = torch.from_numpy(personalized_pred_var)
+        adaptive_shrinkage_alpha = torch.from_numpy(adaptive_shrinkage_alpha)
+    
+    return personalized_pred, personalized_pred_var, adaptive_shrinkage_alpha
+
+def optimize_alpha_with_subject_simple(y_p, y_t, y_g):
+    """Optimize alpha for a subject using a simple approach.
+    
+    Args:
+        y_p: Population model predictions
+        y_t: Subject-specific model predictions
+        y_g: Ground truth values
+        
+    Returns:
+        Optimal alpha value
+    """
+    # Ensure all inputs are numpy arrays
+    if isinstance(y_p, torch.Tensor):
+        y_p = y_p.cpu().numpy() if y_p.is_cuda else y_p.numpy()
+    if isinstance(y_t, torch.Tensor):
+        y_t = y_t.cpu().numpy() if y_t.is_cuda else y_t.numpy()
+    if isinstance(y_g, torch.Tensor):
+        y_g = y_g.cpu().numpy() if y_g.is_cuda else y_g.numpy()
+    
+    # Define the objective function to minimize
+    def objective(alpha):
+        y_combined = alpha * y_p + (1 - alpha) * y_t
+        return np.mean((y_combined - y_g) ** 2)
+    
+    # Optimize alpha in the range [0, 1]
+    result = minimize_scalar(objective, bounds=(0, 1), method='bounded')
+    
+    return result.x
 
 def main():
     # Parameters
@@ -880,6 +1165,7 @@ def main():
     
     # Load and preprocess data
     data, train_ids, val_ids, test_ids, train_subject_indices, val_subject_indices, test_subject_indices = load_and_preprocess_data(data_path)
+
 
     # Set dimensions based on data
     input_dim = data['train_x'].shape[1]
@@ -920,7 +1206,6 @@ def main():
         output_path=results_dir,
         target='ROI_48'  # Προσαρμόστε αυτό ανάλογα με το biomarker που χρησιμοποιείτε
     )
-    
     # Evaluate personalization
     results = evaluate_personalization(
         pop_model,
@@ -939,7 +1224,7 @@ def main():
     summary = results.groupby('n_observations').agg({
         'mse_population': ['mean', 'std'],
         'mse_subject_specific': ['mean', 'std'],
-        'mse_combined': ['mean', 'std']
+        'mse_personalized': ['mean', 'std']
     })
     print(summary)
 
