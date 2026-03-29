@@ -42,6 +42,9 @@ ENV/
 *.npy
 *.npz
 
+# Data files
+*.csv
+
 # Logs
 *.log
 logs/

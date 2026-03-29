@@ -1,11 +1,26 @@
-# bash script
+#!/usr/bin/env bash
+set -euo pipefail
 
-python progressors_non_progressors_group_differences.py
-python mci_progression_prediction_volumns.py 
-python diagnosis_classification.py 
-python simulated_trial.py 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+log() {
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"
+}
 
-python spare_ad_experiment.py
-python brain_age_gap_analysis.py
+run_experiment() {
+    local script="$1"
+    log "Running: $script"
+    python "$SCRIPT_DIR/$script"
+    log "Completed: $script"
+}
 
+log "Starting clinical experiments pipeline"
+
+run_experiment "progressors_non_progressors_group_differences.py"
+run_experiment "mci_progression_prediction_volumes.py"
+run_experiment "diagnosis_classification.py"
+run_experiment "simulated_clinical_trial.py"
+run_experiment "spare_ad_experiment.py"
+run_experiment "brain_age_gap_analysis.py"
+
+log "All clinical experiments completed successfully"
