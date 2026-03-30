@@ -1,26 +1,127 @@
-'''
-Longitudinal BAG Slope Analysis by Diagnostic Groups
-- Define groups: HC, MCI, AD
-- Compute longitudinal BAG slopes for each subject
-- Compare within-group slope distributions
-- Compare between-group separation using Glass's Delta
-  (anchored to observed SD, invariant to model smoothing)
-- Evaluate predicted vs real BAG slope performance
-
-Changes from previous version:
-  1. calculate_effect_size replaced by compute_glass_delta:
-       - Denominator is pooled OBSERVED SD, not predicted SD
-       - Model smoothing compresses predicted variance mechanically;
-         Glass's Delta anchors the effect size to real biological
-         variability so it is comparable across real and predicted slopes
-       - Cohen's d on predicted slopes is computed for contrast only
-         and explicitly flagged as not reportable
-  2. Pairwise comparisons extended from HC vs AD only to all three
-     clinically relevant pairs: HC vs MCI, MCI vs AD, HC vs AD
-  3. eta squared recomputed from sum of squares directly (correct for
-     unequal group sizes) rather than from the F-statistic formula
-  4. All plots are saved to miccai26/ directory
-'''
+# ==============================================================================
+# Experiment: Longitudinal Brain Age Gap (BAG) Slope Analysis
+#             by Diagnostic and Progression Groups
+# ==============================================================================
+#
+# OVERVIEW
+# --------
+# This script analyses how the Brain Age Gap (BAG = predicted brain age minus
+# chronological age) changes over time across diagnostic groups (CN, MCI, AD)
+# and fine-grained progression statuses (e.g. MCI Stable vs MCI Progressor).
+# BAG slopes are computed from both real (observed) SPARE-BA values and
+# DKGP-predicted SPARE-BA trajectories, allowing direct comparison of whether
+# the predicted trajectories preserve clinically meaningful longitudinal signal.
+#
+# MOTIVATION
+# ----------
+# A positive BAG slope (brain aging faster than chronological age) is a marker
+# of accelerated neurodegeneration. If the DKGP model captures true biological
+# trajectories, predicted BAG slopes should: (1) increase systematically from
+# CN to MCI to AD, (2) separate MCI Progressors from MCI Stable subjects, and
+# (3) correlate with real BAG slopes at the individual level. Validating these
+# properties establishes that DKGP-predicted trajectories are biologically
+# meaningful and not merely smooth averages.
+#
+# KEY METHODOLOGICAL DECISIONS
+# ----------------------------
+# 1. Effect size — Glass's Delta (not Cohen's d):
+#      DKGP produces smoother trajectories than raw longitudinal data because
+#      it learns the systematic signal while attenuating subject-level noise.
+#      This mechanically compresses within-group variance in predicted slopes,
+#      making Cohen's d computed on predicted slopes artificially inflated and
+#      incomparable to Cohen's d on real slopes. Glass's Delta resolves this
+#      by anchoring the denominator to the pooled SD of the OBSERVED slopes,
+#      making the effect size invariant to the degree of model smoothing.
+#      Cohen's d on predicted slopes is computed for reference only and is
+#      explicitly flagged as not reportable.
+#
+# 2. Eta squared — computed from sums of squares:
+#      η² is computed directly from SS_between / SS_total rather than from
+#      the F-statistic formula, which is only correct for balanced designs.
+#      The SS approach is exact for unequal group sizes.
+#
+# 3. Pairwise comparisons — all three clinically relevant pairs:
+#      CN vs MCI, MCI vs AD, and CN vs AD (rather than CN vs AD only).
+#
+# 4. BAG slope quality filters:
+#      Subjects are excluded if they have fewer than 2 timepoints, an age
+#      span < 1 year, zero variance in age or BAG, or any NaN in the relevant
+#      columns. Slopes with |slope| > 10 years/year are also excluded as
+#      implausible outliers.
+#
+# EXPERIMENTAL DESIGN
+# -------------------
+# Two levels of grouping are analysed:
+#
+#   Level 1 — Baseline diagnosis (3 groups):
+#     CN (Diagnosis=0), MCI (Diagnosis=1), AD (Diagnosis=2)
+#
+#   Level 2 — Longitudinal progression status (6 groups):
+#     Healthy Control, CN→MCI Progressor, CN→AD Progressor,
+#     MCI Stable, MCI Progressor, AD
+#
+# For each subject with ≥2 timepoints, a BAG slope is estimated as the OLS
+# regression coefficient of BAG on age (years/year). Slopes are computed
+# separately for real and predicted BAG values and compared across groups.
+#
+# DATA
+# ----
+# - SPARE-BA predictions : singletask_SPARE_BA_dkgp_population_allstudies.csv
+#                          (population-level DKGP model, column "score")
+# - Adaptive shrinkage   : adaptive_shrinkage_predictions_alpha_simple_dkgp_
+#                          SPARE_BA_allstudies.csv (alternative model)
+# - Longitudinal covars  : longitudinal_covariates_subjectsamples_longclean_
+#                          hmuse_convs_allstudies.csv
+#                          (Age, Sex, Diagnosis, SPARE_BA per visit)
+# - SPARE-BA rescaling   : scores are z-normalised in storage; rescaled to
+#                          original units using mean=74.409, std=13.094
+#
+# STATISTICAL TESTS
+# -----------------
+# - One-way ANOVA + η² (SS-based): group differences in BAG slopes
+# - Pairwise independent-samples t-tests: all three CN/MCI/AD pairs
+# - Glass's Delta: group separation in predicted slopes, anchored to
+#   observed SD (smoothing-invariant, suitable for reporting)
+# - Pearson correlation + Fisher z-test: BAG–age correlation within groups,
+#   and whether real vs predicted correlations differ significantly
+#
+# OUTPUTS
+# -------
+# Figures (all saved to ./nataging/):
+#   SPAREBA_Experiment_bag_slope_distributions_by_group.{png,svg}
+#       Violin + box plots of real and predicted BAG slopes by CN/MCI/AD
+#   SPAREBA_Experiment_nature_slope_distributions.{png,svg}
+#       Nature Aging-style version of the above
+#   SPAREBA_Experiment_nature_bag_vs_age_scatter.{png,svg}
+#       BAG vs age scatterplots with regression lines (2×3 grid)
+#   SPAREBA_Experiment_nature_correlation_comparison.{png,svg}
+#       Bar chart of BAG–age correlation by group (real vs predicted)
+#   SPAREBA_Experiment_nature_mean_slopes.{png,svg}
+#       Mean BAG slope bar chart with error bars (real vs predicted)
+#   SPAREBA_Experiment_progression_slope_distributions.{png,svg}
+#       Violin + box plots by fine-grained progression status (6 groups)
+#   SPAREBA_Experiment_progression_mean_slopes.{png,svg}
+#       Mean BAG slope bar chart by progression status
+#   SPAREBA_Experiment_progression_real_vs_pred_scatter.{png,svg}
+#       Scatter of real vs predicted BAG slopes coloured by progression status
+#
+# CSVs (all saved to ./nataging/):
+#   SPAREBA_Experiment_individual_bag_slopes.csv
+#       Per-subject real and predicted BAG slopes + metadata
+#   SPAREBA_Experiment_group_slope_statistics.csv
+#       Summary statistics (mean, std, median, % positive) per CN/MCI/AD group
+#   SPAREBA_Experiment_glass_delta_summary.csv
+#       Glass's Delta and Cohen's d for all three pairwise comparisons
+#   SPAREBA_Experiment_correlation_analysis.csv
+#       BAG–age correlation results (real vs predicted) per group
+#   SPAREBA_Experiment_nature_statistical_summary.csv
+#       Compact summary table for manuscript
+#   SPAREBA_Experiment_progression_individual_slopes.csv
+#       Per-subject slopes filtered to the 6 progression status groups
+#   SPAREBA_Experiment_progression_group_statistics.csv
+#       Summary statistics per progression status group
+# ==============================================================================
+ 
 
 import pandas as pd
 import numpy as np
@@ -35,7 +136,7 @@ import warnings
 warnings.filterwarnings('ignore')
 
 # ── Ensure output directory exists ───────────────────────────────────────────
-os.makedirs('./miccai26', exist_ok=True)
+os.makedirs('./nataging', exist_ok=True)
 
 # ── Publication-quality plot parameters ──────────────────────────────────────
 plt.style.use('default')
@@ -460,9 +561,9 @@ for ax in axes:
     ax.spines['right'].set_visible(False)
 
 plt.tight_layout()
-plt.savefig('miccai26/SPAREBA_Experiment_bag_slope_distributions_by_group.png',
+plt.savefig('nataging/SPAREBA_Experiment_bag_slope_distributions_by_group.png',
             dpi=300, bbox_inches='tight', facecolor='white')
-plt.savefig('miccai26/SPAREBA_Experiment_bag_slope_distributions_by_group.svg',
+plt.savefig('nataging/SPAREBA_Experiment_bag_slope_distributions_by_group.svg',
             bbox_inches='tight', facecolor='white')
 plt.close()
 print("✓ Diagnostic group violin plots saved")
@@ -533,9 +634,9 @@ print("7. SAVING RESULTS")
 print("="*60)
 
 slopes_df.to_csv(
-    "miccai26/SPAREBA_Experiment_individual_bag_slopes.csv", index=False)
+    "nataging/SPAREBA_Experiment_individual_bag_slopes.csv", index=False)
 pd.DataFrame(group_stats).T.to_csv(
-    "miccai26/SPAREBA_Experiment_group_slope_statistics.csv")
+    "nataging/SPAREBA_Experiment_group_slope_statistics.csv")
 
 glass_summary = [
     {
@@ -551,7 +652,7 @@ glass_summary = [
     for key, res in glass_results.items()
 ]
 pd.DataFrame(glass_summary).to_csv(
-    "miccai26/SPAREBA_Experiment_glass_delta_summary.csv", index=False)
+    "nataging/SPAREBA_Experiment_glass_delta_summary.csv", index=False)
 print("✓ Individual slopes, group statistics, and Glass's Delta summary saved")
 
 
@@ -607,7 +708,7 @@ for group in valid_groups:
 
 if correlation_results:
     pd.DataFrame(correlation_results).to_csv(
-        "miccai26/SPAREBA_Experiment_correlation_analysis.csv", index=False)
+        "nataging/SPAREBA_Experiment_correlation_analysis.csv", index=False)
     print("\n✓ Correlation analysis saved")
 
 
@@ -676,9 +777,9 @@ for ax in axes:
     ax.spines['right'].set_visible(False)
 
 plt.tight_layout()
-plt.savefig('miccai26/SPAREBA_Experiment_nature_slope_distributions.png',
+plt.savefig('nataging/SPAREBA_Experiment_nature_slope_distributions.png',
             dpi=300, bbox_inches='tight', facecolor='white')
-plt.savefig('miccai26/SPAREBA_Experiment_nature_slope_distributions.svg',
+plt.savefig('nataging/SPAREBA_Experiment_nature_slope_distributions.svg',
             bbox_inches='tight', facecolor='white')
 plt.close()
 print("✓ Nature-style slope distributions saved")
@@ -710,9 +811,9 @@ for i, group in enumerate(valid_groups):
         ax.tick_params(axis='both', which='major', width=0.5, length=3, labelsize=7)
         ax.set_ylim(-35, 65)
 plt.tight_layout()
-plt.savefig('miccai26/SPAREBA_Experiment_nature_bag_vs_age_scatter.png',
+plt.savefig('nataging/SPAREBA_Experiment_nature_bag_vs_age_scatter.png',
             dpi=300, bbox_inches='tight', facecolor='white')
-plt.savefig('miccai26/SPAREBA_Experiment_nature_bag_vs_age_scatter.svg',
+plt.savefig('nataging/SPAREBA_Experiment_nature_bag_vs_age_scatter.svg',
             bbox_inches='tight', facecolor='white')
 plt.close()
 print("✓ BAG vs Age scatterplots saved")
@@ -749,9 +850,9 @@ if corr_data:
                     f'{val:.3f}', ha='center',
                     va='bottom' if val >= 0 else 'top', fontsize=9)
     plt.tight_layout()
-    plt.savefig('miccai26/SPAREBA_Experiment_nature_correlation_comparison.png',
+    plt.savefig('nataging/SPAREBA_Experiment_nature_correlation_comparison.png',
                 dpi=300, bbox_inches='tight', facecolor='white')
-    plt.savefig('miccai26/SPAREBA_Experiment_nature_correlation_comparison.svg',
+    plt.savefig('nataging/SPAREBA_Experiment_nature_correlation_comparison.svg',
                 bbox_inches='tight', facecolor='white')
     plt.close()
     print("✓ Correlation comparison bar plot saved")
@@ -787,9 +888,9 @@ if gp:
         ax.text(i + w/2, p + (0.01 if p >= 0 else -0.01), f'{p:.3f}',
                 ha='center', va='bottom' if p >= 0 else 'top', fontsize=7)
     plt.tight_layout()
-    plt.savefig('miccai26/SPAREBA_Experiment_nature_mean_slopes.png',
+    plt.savefig('nataging/SPAREBA_Experiment_nature_mean_slopes.png',
                 dpi=300, bbox_inches='tight', facecolor='white')
-    plt.savefig('miccai26/SPAREBA_Experiment_nature_mean_slopes.svg',
+    plt.savefig('nataging/SPAREBA_Experiment_nature_mean_slopes.svg',
                 bbox_inches='tight', facecolor='white')
     plt.close()
     print("✓ Mean slopes barplot saved")
@@ -812,7 +913,7 @@ for group in valid_groups:
 if stat_summary:
     summary_df = pd.DataFrame(stat_summary)
     summary_df.to_csv(
-        "miccai26/SPAREBA_Experiment_nature_statistical_summary.csv",
+        "nataging/SPAREBA_Experiment_nature_statistical_summary.csv",
         index=False)
     print("\nSTATISTICAL SUMMARY TABLE")
     print(summary_df.to_string(index=False))
@@ -967,9 +1068,9 @@ for ax in axes:
     ax.spines['right'].set_visible(False)
 
 plt.tight_layout()
-plt.savefig('miccai26/SPAREBA_Experiment_progression_slope_distributions.png',
+plt.savefig('nataging/SPAREBA_Experiment_progression_slope_distributions.png',
             dpi=300, bbox_inches='tight', facecolor='white')
-plt.savefig('miccai26/SPAREBA_Experiment_progression_slope_distributions.svg',
+plt.savefig('nataging/SPAREBA_Experiment_progression_slope_distributions.svg',
             bbox_inches='tight', facecolor='white')
 plt.close()
 print("✓ Progression slope distributions saved")
@@ -1007,9 +1108,9 @@ if gp:
         ax.text(i + w/2, p + (0.01 if p >= 0 else -0.01), f'{p:.3f}',
                 ha='center', va='bottom' if p >= 0 else 'top', fontsize=8)
     plt.tight_layout()
-    plt.savefig('miccai26/SPAREBA_Experiment_progression_mean_slopes.png',
+    plt.savefig('nataging/SPAREBA_Experiment_progression_mean_slopes.png',
                 dpi=300, bbox_inches='tight', facecolor='white')
-    plt.savefig('miccai26/SPAREBA_Experiment_progression_mean_slopes.svg',
+    plt.savefig('nataging/SPAREBA_Experiment_progression_mean_slopes.svg',
                 bbox_inches='tight', facecolor='white')
     plt.close()
     print("✓ Progression mean slopes barplot saved")
@@ -1042,9 +1143,9 @@ ax.legend(frameon=False, fontsize=8, loc='upper left')
 ax.grid(True, alpha=0.3)
 ax.set_aspect('equal', adjustable='box')
 plt.tight_layout()
-plt.savefig('miccai26/SPAREBA_Experiment_progression_real_vs_pred_scatter.png',
+plt.savefig('nataging/SPAREBA_Experiment_progression_real_vs_pred_scatter.png',
             dpi=300, bbox_inches='tight', facecolor='white')
-plt.savefig('miccai26/SPAREBA_Experiment_progression_real_vs_pred_scatter.svg',
+plt.savefig('nataging/SPAREBA_Experiment_progression_real_vs_pred_scatter.svg',
             bbox_inches='tight', facecolor='white')
 plt.close()
 print("✓ Real vs Predicted scatter saved")
@@ -1098,10 +1199,10 @@ print("12. SAVING PROGRESSION ANALYSIS RESULTS")
 print("="*60)
 
 slopes_df_progression.to_csv(
-    "miccai26/SPAREBA_Experiment_progression_individual_slopes.csv",
+    "nataging/SPAREBA_Experiment_progression_individual_slopes.csv",
     index=False)
 pd.DataFrame(progression_stats).T.to_csv(
-    "miccai26/SPAREBA_Experiment_progression_group_statistics.csv")
+    "nataging/SPAREBA_Experiment_progression_group_statistics.csv")
 print("✓ Progression results saved")
 
 print("\n" + "="*60)
