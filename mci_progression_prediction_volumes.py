@@ -1,8 +1,111 @@
-'''
-Manuscript 1: Rate of Change in the 145 Brain Volumes, Classification of Progressors vs Non-Progressors
-using the 145 brain volumes and the predicted rate of change of the 145 brain volumes. 
-Results for the Section:Predicted Rate of Change as a Tool for Discriminating Progressors from Non-Progressors
-'''
+# ==============================================================================
+# Experiment: MCI Stable vs MCI Progressor Classification
+#             Using Rate-of-Change in 145 Brain ROI Volumes
+#             DKGP Predicted Trajectories vs RNN-AD Predicted Trajectories
+# ==============================================================================
+#
+# OVERVIEW
+# --------
+# This script benchmarks p-DKGP-predicted brain trajectory slopes against
+# RNN-AD-predicted slopes (Nguyen et al. 2020) for the task of classifying
+# MCI subjects as stable (MCI→MCI) or progressing to AD (MCI→AD). For each
+# subject and each of 145 MUSE brain ROIs, the OLS slope of the longitudinal
+# trajectory is computed as the feature. Four feature sets are evaluated:
+#
+#   1. Baseline volumes       — static first-timepoint 145 volumes
+#   2. RNN-AD predicted RoC   — slopes from RNN-AD predicted trajectories using cross-sectional data
+#   3. DKGP predicted RoC     — slopes from p-DKGP predicted trajectories using cross-sectional data
+#   4. Real RoC               — slopes from real observed trajectories (upper bound)
+#
+# MOTIVATION
+# ----------
+# Predicting MCI-to-AD conversion is the most clinically relevant prognostic
+# task in Alzheimer's research. If trajectory prediction models capture true
+# longitudinal dynamics, their predicted slopes should contain more information
+# than static baseline volumes alone — and should approach the discriminative
+# power of real observed slopes. Comparing p-DKGP against RNN-AD provides a
+# head-to-head benchmark of two fundamentally different trajectory modelling
+# approaches: p-DKGP (Gaussian process) vs RNN-AD (recurrent
+# neural network).
+#
+# CLASSIFIER SELECTION
+# --------------------
+# Logistic Regression is applied to all four feature sets
+# (Baseline, RNN-AD, DKGP, Real). Using the same classifier across all
+# conditions ensures that any differences in ROC-AUC reflect the quality
+# of the trajectory features rather than differences in classifier capacity.
+#
+# CLASSIFICATION PROTOCOL
+# -----------------------
+# - Nested cross-validation:
+#     Outer loop — StratifiedKFold(5): 5 held-out test folds (20% each)
+#     Inner loop — GridSearchCV with StratifiedKFold(3): hyperparameter tuning
+#     The best inner model is refit on the full outer train split before
+#     evaluation on the held-out test fold — no information leakage.
+# - Classifiers evaluated: Logistic Regression, Random Forest, Gradient Boosting
+# - Feature scaling: StandardScaler fit on outer train only, applied to test
+# - Metrics: ROC-AUC (primary), PR-AUC, accuracy, precision, recall, F1, FDR, FPR
+# - Mean ROC curve: per-fold TPR interpolated onto a common FPR grid (300 points)
+#
+# SIGNIFICANCE TESTING — DELONG'S TEST
+# --------------------------------------
+# DeLong's test (DeLong, DeLong & Clarke-Pearson, Biometrics 1988) is used to
+# compare ROC-AUC between feature sets. This is the gold standard for correlated
+# AUC comparison — it exploits the full paired structure of the predictions
+# (each subject contributes one probability score per model), giving far more
+# power than a t-test on 5 fold AUCs.
+#
+# Three pairwise comparisons are run:
+#   1. p-DKGP predicted   vs. Baseline volumes 
+#   2. RNN-AD predicted vs. Baseline volumes
+#   3. p-DKGP predicted   vs. RNN-AD predicted 
+#
+#
+# DATA
+# ----
+# - RNN-AD predictions  : ../Standalone_Nguyen2020_RNNAD/nataging/
+#                         RNN_AD_Consolidated.csv
+#                         (columns: id, time, y_H_MUSE_Volume_*, score_H_MUSE_Volume_*)
+# - DKGP predictions    : ./nataging/OldHarmonizedMUSEROIs.csv
+#                         (same column structure as RNN-AD)
+# - Longitudinal covars : longitudinal_covariates_subjectsamples_longclean_
+#                         hmuse_convs_allstudies.csv
+#                         (Diagnosis per visit, used to derive progression labels)
+# - Baseline volumes    : ./nataging/HarmonizedROIVolumes.csv
+#                         (first timepoint y_H_MUSE_Volume_* per subject)
+# - Progression labels  : derived from first/last Diagnosis per subject:
+#                         MCI→MCI = MCI Stable (label 0)
+#                         MCI→AD  = MCI Progressor (label 1)
+#
+#
+# OUTPUTS
+# -------
+# Figures (all saved to ./miccai26/):
+#   RNNAD_DKGP_mci_stable_vs_progressor_comprehensive_roc_curves.{png,pdf,svg}
+#       4-curve ROC figure: Baseline [GBM], RNN-AD [LR worst], DKGP [LR best],
+#       Real UB [RF], with AUC ± std in legend and asymmetric classifier footnote
+#   RNNAD_DKGP_slope_quality_comparison.{png,svg}
+#       Histogram comparing real vs predicted slope distributions (both models)
+#
+# CSVs / text files:
+#   ./nataging/rate_of_change_per_roi_rnnad.csv
+#       Per-subject per-ROI OLS slopes (real and RNN-AD predicted)
+#   ./nataging/rate_of_change_per_roi_dkgp.csv
+#       Per-subject per-ROI OLS slopes (real and DKGP predicted)
+#   ./nataging/RNNAD_DKGP_rate_of_change_mci_stable_mci_progressor.txt
+#       Full console output: dataset info, slope quality, CV results,
+#       DeLong test results, comprehensive metrics table
+#
+# Cache:
+#   ./nataging/mci_classification_results_cache.pkl
+#       Pickled dict of all four evaluate_features() result dicts, used by
+#       --plot-only mode to regenerate figures without rerunning classification
+#
+# Plot-only mode:
+#   Run with --plot-only flag to regenerate figures from the cached results
+#   without repeating the full nested CV (which can take 30+ minutes).
+# ==============================================================================
+ 
 import numpy as np
 import pandas as pd
 import pickle
@@ -56,13 +159,8 @@ plt.rcParams.update({
     'figure.dpi': 300
 })
 
-# Asymmetric classifier selection for stress-test comparison:
-# RNN-AD uses its WORST classifier, DKGP uses its BEST.
-# If DKGP's best still can't beat RNN-AD's worst significantly,
-# it is a strong honest statement about the relative model quality.
-RNN_CLASSIFIER  = 'Gradient Boosting'    # worst for RNN-AD  (AUC = 0.767 ± 0.040)
-DKGP_CLASSIFIER = 'Logistic Regression'  # best  for DKGP    (AUC = 0.791 ± 0.022)
-FIXED_CLASSIFIER = 'Random Forest'       # used for real upper bound ONLY
+
+CLASSIFIER = 'Logistic Regression' 
 
 
 def plot_comprehensive_roc_curves(baseline_results, rnn_pred_results, dkgp_pred_results,
@@ -77,10 +175,10 @@ def plot_comprehensive_roc_curves(baseline_results, rnn_pred_results, dkgp_pred_
 
     # Ordered from bottom to top visually; colors chosen for accessibility
     methods = [
-        ('Baseline volumes',          baseline_results,    RNN_CLASSIFIER, '#9B59B6', (5, 2),     1.8),
-        ('RNN-AD predicted',          rnn_pred_results,    RNN_CLASSIFIER,    '#E74C3C', (4, 2, 1, 2), 2.0),
-        ('DKGP predicted (ours)',     dkgp_pred_results,   DKGP_CLASSIFIER,   '#1A5276', 'solid',      2.5),
-        ('Real trajectories (upper bound)', real_results,  FIXED_CLASSIFIER,  '#7F8C8D', (2, 2),       1.8),
+        ('Baseline volumes',          baseline_results,    CLASSIFIER, '#9B59B6', (5, 2),     1.8),
+        ('RNN-AD predicted',          rnn_pred_results,    CLASSIFIER,    '#E74C3C', (4, 2, 1, 2), 2.0),
+        ('DKGP predicted (ours)',     dkgp_pred_results,   CLASSIFIER,   '#1A5276', 'solid',      2.5),
+        ('Real trajectories (upper bound)', real_results,  CLASSIFIER,  '#7F8C8D', (2, 2),       1.8),
     ]
 
     for label, results, clf, color, dashes, lw in methods:
@@ -110,7 +208,6 @@ def plot_comprehensive_roc_curves(baseline_results, rnn_pred_results, dkgp_pred_
     for label in ax.get_xticklabels() + ax.get_yticklabels():
         label.set_fontweight('normal')
 
-    # Clean legend — lower right, no frame, note asymmetric classifier choice
     legend = ax.legend(
         title='n = 882 MCI subjects',
         title_fontsize=10,
@@ -126,7 +223,7 @@ def plot_comprehensive_roc_curves(baseline_results, rnn_pred_results, dkgp_pred_
 
     # Footnote below legend about asymmetric design
     ax.annotate(
-        f'RNN-AD: {RNN_CLASSIFIER} (worst) | DKGP: {DKGP_CLASSIFIER} (best)',
+        f'RNN-AD: {CLASSIFIER} | DKGP: {CLASSIFIER}',
         xy=(0.99, 0.01), xycoords='axes fraction',
         fontsize=8, color='#888888',
         ha='right', va='bottom', style='italic'
@@ -145,15 +242,15 @@ def plot_comprehensive_roc_curves(baseline_results, rnn_pred_results, dkgp_pred_
                 bbox_inches='tight')
     plt.close()
     print(f"✓ ROC curves saved — all four conditions "
-          f"(Baseline [GBM] | RNN-AD [{RNN_CLASSIFIER}] | "
-          f"DKGP [{DKGP_CLASSIFIER}] | Real UB [{FIXED_CLASSIFIER}])")
+          f"(Baseline [GBM] | RNN-AD [{CLASSIFIER}] | "
+          f"DKGP [{CLASSIFIER}] | Real UB [{CLASSIFIER}])")
 
 
 def load_baseline_volumes():
     """Load baseline raw volumes for 145 ROIs from the first timepoint of each subject."""
     print("Loading baseline volumes...")
     try:
-        df = pd.read_csv('./manuscript1/HarmonizedROIVolumes.csv')
+        df = pd.read_csv('./nataging/HarmonizedROIVolumes.csv')
         volume_cols = [col for col in df.columns if col.startswith('y_H_MUSE_Volume')]
         baseline_data = []
         for subject in df['id'].unique():
@@ -524,18 +621,18 @@ def perform_statistical_comparison(baseline_results, rnn_results, dkgp_results,
     """
     print("\n" + "="*80)
     print("DELONG'S TEST — ALL PAIRWISE COMPARISONS")
-    print(f"Classifier : {DKGP_CLASSIFIER} (applied symmetrically to all feature sets)")
-    print(f"n          ≈ {len(dkgp_results[DKGP_CLASSIFIER]['all_y_true'])} subjects (pooled CV)")
+    print(f"Classifier : {CLASSIFIER} (applied symmetrically to all feature sets)")
+    print(f"n          ≈ {len(dkgp_results[CLASSIFIER]['all_y_true'])} subjects (pooled CV)")
     print("="*80)
 
     # ── Extract pooled prediction vectors ─────────────────────────────────────
-    y_true_base = baseline_results[FIXED_CLASSIFIER]['all_y_true']
-    y_true_rnn  = rnn_results[RNN_CLASSIFIER]['all_y_true']
-    y_true_dkgp = dkgp_results[DKGP_CLASSIFIER]['all_y_true']
+    y_true_base = baseline_results[CLASSIFIER]['all_y_true']
+    y_true_rnn  = rnn_results[CLASSIFIER]['all_y_true']
+    y_true_dkgp = dkgp_results[CLASSIFIER]['all_y_true']
 
-    y_prob_base = baseline_results[RNN_CLASSIFIER]['all_y_prob']
-    y_prob_rnn  = rnn_results[RNN_CLASSIFIER]['all_y_prob']
-    y_prob_dkgp = dkgp_results[DKGP_CLASSIFIER]['all_y_prob']
+    y_prob_base = baseline_results[CLASSIFIER]['all_y_prob']
+    y_prob_rnn  = rnn_results[CLASSIFIER]['all_y_prob']
+    y_prob_dkgp = dkgp_results[CLASSIFIER]['all_y_prob']
 
     # ── Alignment assertion ───────────────────────────────────────────────────
     # DeLong's test is only valid when all y_true vectors are identical —
@@ -550,24 +647,24 @@ def perform_statistical_comparison(baseline_results, rnn_results, dkgp_results,
     y_true = y_true_dkgp   # all identical; use any one
 
     # ── AUC summary ──────────────────────────────────────────────────────────
-    auc_base = baseline_results[FIXED_CLASSIFIER]['roc_auc']
-    auc_rnn  = rnn_results[RNN_CLASSIFIER]['roc_auc']
-    auc_dkgp = dkgp_results[DKGP_CLASSIFIER]['roc_auc']
-    auc_real = real_results[FIXED_CLASSIFIER]['roc_auc']
+    auc_base = baseline_results[CLASSIFIER]['roc_auc']
+    auc_rnn  = rnn_results[CLASSIFIER]['roc_auc']
+    auc_dkgp = dkgp_results[CLASSIFIER]['roc_auc']
+    auc_real = real_results[CLASSIFIER]['roc_auc']
 
-    std_base = baseline_results[FIXED_CLASSIFIER]['roc_auc_std']
-    std_rnn  = rnn_results[RNN_CLASSIFIER]['roc_auc_std']
-    std_dkgp = dkgp_results[DKGP_CLASSIFIER]['roc_auc_std']
-    std_real = real_results[FIXED_CLASSIFIER]['roc_auc_std']
+    std_base = baseline_results[CLASSIFIER]['roc_auc_std']
+    std_rnn  = rnn_results[CLASSIFIER]['roc_auc_std']
+    std_dkgp = dkgp_results[CLASSIFIER]['roc_auc_std']
+    std_real = real_results[CLASSIFIER]['roc_auc_std']
 
     # ── AUC summary with 95% CI ───────────────────────────────────────────────
     print(f"\n  AUC Summary (mean [95% CI] across 5 folds):")
 
     for label, results, classifier in [
-        ("Real upper bound", real_results, FIXED_CLASSIFIER),
-        ("DKGP predicted",   dkgp_results, DKGP_CLASSIFIER),
-        ("RNN-AD predicted", rnn_results, RNN_CLASSIFIER),
-        ("Baseline volumes", baseline_results, FIXED_CLASSIFIER),
+        ("Real upper bound", real_results, CLASSIFIER),
+        ("DKGP predicted",   dkgp_results, CLASSIFIER),
+        ("RNN-AD predicted", rnn_results, CLASSIFIER),
+        ("Baseline volumes", baseline_results, CLASSIFIER),
     ]:
         if results is None:
             continue
@@ -751,7 +848,7 @@ def analyze_slope_quality(rate_of_change_df):
 def analyze_progressor_classification(rate_of_change_df, covariates_df, baseline_df=None):
     """Analyze progressor vs non-progressor classification using real and/or predicted data."""
 
-    with open('./manuscript1/RNNAD_DKGP_rate_of_change_mci_stable_mci_progressor.txt', 'w') as f:
+    with open('./nataging/RNNAD_DKGP_rate_of_change_mci_stable_mci_progressor.txt', 'w') as f:
         import sys
         original_stdout = sys.stdout
 
@@ -992,8 +1089,8 @@ def analyze_progressor_classification(rate_of_change_df, covariates_df, baseline
             )
 
             # ── Cache results ────────────────────────────────────────────────
-            CACHE_PATH = './manuscript1/mci_classification_results_cache.pkl'
-            os.makedirs('./manuscript1', exist_ok=True)
+            CACHE_PATH = './nataging/mci_classification_results_cache.pkl'
+            os.makedirs('./nataging', exist_ok=True)
             with open(CACHE_PATH, 'wb') as f:
                 pickle.dump({
                     'baseline_results':  baseline_results,
@@ -1024,16 +1121,16 @@ def analyze_progressor_classification(rate_of_change_df, covariates_df, baseline
             # ── Comprehensive metrics table ───────────────────────────────────
             print(f"\n" + "="*80)
             print("COMPREHENSIVE METRICS SUMMARY (mean ± std across 5 folds)")
-            print(f"Classifier: {DKGP_CLASSIFIER} — applied symmetrically to all feature sets")
+            print(f"Classifier: {CLASSIFIER} — applied symmetrically to all feature sets")
             print("="*80)
 
             method_list = [
-                ("Real upper bound", real_results[FIXED_CLASSIFIER]),
-                ("DKGP predicted",   pred_dkgp_results[DKGP_CLASSIFIER]),
-                ("RNN-AD predicted", pred_rnn_results[RNN_CLASSIFIER]),
+                ("Real upper bound", real_results[CLASSIFIER]),
+                ("DKGP predicted",   pred_dkgp_results[CLASSIFIER]),
+                ("RNN-AD predicted", pred_rnn_results[CLASSIFIER]),
             ]
             if baseline_results is not None:
-                method_list.append(("Baseline volumes", baseline_results[RNN_CLASSIFIER]))
+                method_list.append(("Baseline volumes", baseline_results[CLASSIFIER]))
 
             metrics = [
                 ('roc_auc',   'AUC-ROC'),
@@ -1064,8 +1161,8 @@ def analyze_progressor_classification(rate_of_change_df, covariates_df, baseline
                 print()
 
             # ── Delta table: DKGP vs RNN-AD and DKGP vs Baseline ─────────────
-            dkgp_r = pred_dkgp_results[DKGP_CLASSIFIER]
-            rnn_r  = pred_rnn_results[RNN_CLASSIFIER]
+            dkgp_r = pred_dkgp_results[CLASSIFIER]
+            rnn_r  = pred_rnn_results[CLASSIFIER]
 
             print(f"\n  Delta (DKGP predicted − RNN-AD predicted):")
             for key, label in metrics:
@@ -1076,7 +1173,7 @@ def analyze_progressor_classification(rate_of_change_df, covariates_df, baseline
                           f"{'↑' if dv > rv else '↓'}")
 
             if baseline_results is not None:
-                base_r = baseline_results[RNN_CLASSIFIER]
+                base_r = baseline_results[CLASSIFIER]
                 print(f"\n  Delta (DKGP predicted − Baseline volumes):")
                 for key, label in metrics:
                     dv = dkgp_r.get(key, float('nan'))
@@ -1109,14 +1206,14 @@ if __name__ == "__main__":
     print("  - Models: RNN-AD predicted RoC vs DKGP predicted RoC")
     print("  - Baseline: Static brain volumes")
     print("  - Upper bound: Real rate of change (RNN-AD file)")
-    print(f"  - Stress-test: RNN-AD worst [{RNN_CLASSIFIER}] vs DKGP best [{DKGP_CLASSIFIER}]")
+    print(f"  - Stress-test: RNN-AD worst [{CLASSIFIER}] vs DKGP best [{CLASSIFIER}]")
     print("="*80)
 
     # ── Paths ────────────────────────────────────────────────────────────────
-    RNN_IN_FILE   = Path("../Standalone_Nguyen2020_RNNAD/manuscript1/RNN_AD_Consolidated.csv")
-    DKGP_IN_FILE  = Path("./manuscript1/OldHarmonizedMUSEROIs.csv")
-    RNN_OUT_FILE  = Path("./manuscript1/rate_of_change_per_roi_rnnad.csv")
-    DKGP_OUT_FILE = Path("./manuscript1/rate_of_change_per_roi_dkgp.csv")
+    RNN_IN_FILE   = Path("../Standalone_Nguyen2020_RNNAD/nataging/RNN_AD_Consolidated.csv")
+    DKGP_IN_FILE  = Path("./nataging/OldHarmonizedMUSEROIs.csv")
+    RNN_OUT_FILE  = Path("./nataging/rate_of_change_per_roi_rnnad.csv")
+    DKGP_OUT_FILE = Path("./nataging/rate_of_change_per_roi_dkgp.csv")
 
     def ols_slope(t, v):
         if len(t) < 2:
@@ -1241,7 +1338,7 @@ if __name__ == '__plot_only__' or (
         len(__import__('sys').argv) > 1 and
         __import__('sys').argv[1] == '--plot-only'):
     import sys
-    CACHE_PATH = './manuscript1/mci_classification_results_cache.pkl'
+    CACHE_PATH = './nataging/mci_classification_results_cache.pkl'
     if not os.path.exists(CACHE_PATH):
         print(f"✗ Cache not found at {CACHE_PATH}. Run the full script first.")
         sys.exit(1)
