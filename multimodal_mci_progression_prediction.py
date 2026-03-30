@@ -1,16 +1,86 @@
-'''
-Classify Progression Status: MCI Stable vs MCI Progressors based on Multimodal Trajectories:
-145 RoC, SPARE-AD RoC, ADAS and MMSE RoC
-Classifiers: Logistic Regression (linear)
-
-Significance testing integrated (Option B):
-  - Paired t-test on 5 outer-fold AUCs  (multimodal vs each unimodal, per classifier)
-  - DeLong test on full OOF predicted probabilities
-  - Bonferroni correction across all pairwise comparisons
-
-Figure: LR-only horizontal bar chart with DeLong significance brackets
-        (multimodal vs each unimodal; unimodals not compared with each other)
-'''
+# ==============================================================================
+# Experiment: Multimodal Trajectory Classification of MCI Progression
+#             MCI Stable vs MCI Progressors Using Rate-of-Change Features
+# ==============================================================================
+#
+# OVERVIEW
+# --------
+# This script classifies whether an MCI subject will progress to Alzheimer's
+# Disease (MCI Progressor) or remain stable (MCI Stable), using rates of
+# change (RoC) derived from DKGP-predicted longitudinal trajectories across
+# four modalities: 145 brain ROI volumes, SPARE-AD, ADAS-Cog, and MMSE.
+# The central question is whether combining all modalities into a multimodal
+# feature set yields better prognostic discrimination than any single
+# modality alone.
+#
+# MOTIVATION
+# ----------
+# Predicting MCI-to-AD conversion is one of the most clinically valuable
+# tasks in Alzheimer's research. Structural brain change (ROI volumes),
+# imaging-based AD signatures (SPARE-AD), and cognitive decline (ADAS, MMSE)
+# each capture a different aspect of the disease process. If the DKGP model
+# produces trajectories that preserve these signals, then RoC features derived
+# from predicted trajectories should support accurate progression prediction —
+# and combining modalities should outperform any single source.
+#
+# EXPERIMENTAL DESIGN
+# -------------------
+# For each subject, a rate-of-change (OLS slope) is computed per biomarker
+# from their predicted longitudinal trajectory. These slopes become the
+# feature vector for classification. Four feature sets are evaluated:
+#
+#   1. 145 ROIs        : RoC of 145 MUSE volumetric brain regions (predicted)
+#   2. SPARE-AD        : RoC of the SPARE-AD composite imaging score
+#   3. Cognitive       : RoC of ADAS-Cog + MMSE scores
+#   4. Multimodal      : All of the above concatenated (148 features total)
+#
+# Each feature set is evaluated with two classifiers:
+#   - Logistic Regression (LR) — linear, interpretable
+#   - Random Forest (RF)       — non-linear, ensemble
+#
+# Only subjects with complete data across ALL modalities are included,
+# ensuring fair comparison across conditions.
+#
+# CLASSIFICATION PROTOCOL
+# -----------------------
+# - Nested cross-validation: outer 5-fold stratified CV for performance
+#   estimation; inner 3-fold GridSearchCV for hyperparameter tuning
+# - Threshold selection: Youden index estimated on inner OOF predictions
+#   (data-leak-free — threshold never touches the outer test fold)
+# - OOF probabilities: accumulated across outer folds for DeLong testing
+# - Metrics: ROC-AUC (primary), PR-AUC, precision, recall, F1, specificity
+#
+# SIGNIFICANCE TESTING
+# --------------------
+# Two complementary tests compare multimodal vs each unimodal baseline:
+#   1. Paired t-test on 5 outer-fold AUCs (within-fold pairing controls
+#      for data-difficulty variability)
+#   2. DeLong test (Sun & Xu 2014) on full OOF predicted probabilities
+#      (more powerful — uses the complete probability distributions)
+# Both tests apply Bonferroni correction across the 3 unimodal comparisons.
+#
+# DATA
+# ----
+# - Subjects        : ADNI cohort (MCI at baseline), multi-study longitudinal
+# - Labels          : MCI Stable (Dx=1 throughout) vs MCI Progressor (Dx=1→2)
+# - ROI features    : 145 MUSE predicted volumetric RoC (column "score")
+# - SPARE-AD        : Predicted SPARE-AD score RoC
+# - Cognitive       : Predicted ADAS-Cog + MMSE score RoC
+# - Covariates      : Baseline age, sex (available but not used as features)
+#
+# OUTPUTS
+# -------
+# - ./nataging/Multimodal_LR_Significance.{png,pdf,svg}
+#       Horizontal bar chart: LR ROC-AUC per modality with 95% CI error bars
+#       and DeLong significance brackets (multimodal vs each unimodal)
+# - ./nataging/significance_ttest.csv
+#       Paired t-test results for LR + RF (Bonferroni-corrected)
+# - ./nataging/significance_delong.csv
+#       DeLong test results for LR + RF (Bonferroni-corrected)
+# - ./common_subjects.npy
+#       Array of subject IDs included in the analysis (all modalities present)
+# ==============================================================================
+ 
 
 import os
 import pandas as pd

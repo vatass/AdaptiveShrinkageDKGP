@@ -16,11 +16,15 @@ run_experiment() {
 
 log "Starting clinical experiments pipeline"
 
+
 run_experiment "progressors_non_progressors_group_differences.py"
 run_experiment "mci_progression_prediction_volumes.py"
 run_experiment "diagnosis_classification.py"
 run_experiment "simulated_clinical_trial.py"
+
 run_experiment "spare_ad_experiment.py"
 run_experiment "brain_age_gap_analysis.py"
+
+run_experiment "multimodal_mci_progression_prediction.py"
 
 log "All clinical experiments completed successfully"
