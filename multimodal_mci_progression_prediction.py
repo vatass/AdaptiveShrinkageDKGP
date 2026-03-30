@@ -1,11 +1,11 @@
 '''
-Manuscript1: Classify Progression Status based on Multimodal Trajectories:
+Classify Progression Status: MCI Stable vs MCI Progressors based on Multimodal Trajectories:
 145 RoC, SPARE-AD RoC, ADAS and MMSE RoC
-Classifiers: Logistic Regression (linear) + Random Forest (non-linear)
+Classifiers: Logistic Regression (linear)
 
 Significance testing integrated (Option B):
   - Paired t-test on 5 outer-fold AUCs  (multimodal vs each unimodal, per classifier)
-  - DeLong test on full OOF predicted probabilities (Sun & Xu 2014)
+  - DeLong test on full OOF predicted probabilities
   - Bonferroni correction across all pairwise comparisons
 
 Figure: LR-only horizontal bar chart with DeLong significance brackets
@@ -462,8 +462,8 @@ def load_145_roi_trajectories():
         if os.path.exists(file_path):
             try:
                 data = pd.read_csv(file_path)
-                roi_data[f'y_H_MUSE_Volume_{roi_idx}']     = data['y']
-                roi_data[f'score_H_MUSE_Volume_{roi_idx}'] = data['score']
+                roi_data[f'y_H_MUSE_Volume_{roi_idx}']     = data['y']  # groundtruth
+                roi_data[f'score_H_MUSE_Volume_{roi_idx}'] = data['score'] # predicted
                 if roi_idx == 0:
                     roi_data['id']   = data['id']
                     roi_data['time'] = data['time']
@@ -675,7 +675,7 @@ def prepare_X_y(merged_data):
 def classify_progression_145_rois_fair(roi_roc_data, progression_data,
                                         common_subjects):
     print("\n" + "=" * 80)
-    print("🧠  145 ROI RoC — MCI Stable vs MCI Progressor  (LR + RF)")
+    print("145 ROI RoC — MCI Stable vs MCI Progressor  (LR + RF)")
     print("=" * 80)
 
     roi_roc_common = roi_roc_data[roi_roc_data['id'].isin(common_subjects)]
@@ -698,7 +698,7 @@ def classify_progression_spare_ad_fair(spare_ad_data, progression_data,
     print("=" * 80)
 
     if spare_ad_data is None:
-        print("   ❌ No SPARE-AD data")
+        print("No SPARE-AD data")
         return None, None, None, None
 
     spare_common = spare_ad_data[spare_ad_data['id'].isin(common_subjects)]
@@ -706,7 +706,7 @@ def classify_progression_spare_ad_fair(spare_ad_data, progression_data,
 
     spare_roc = calculate_rate_of_change(spare_common, ['SPARE_AD_score'], 'time', 'id')
     if len(spare_roc) == 0:
-        print("   ❌ Could not compute SPARE-AD RoC")
+        print("Could not compute SPARE-AD RoC")
         return None, None, None, None
 
     merged_data = spare_roc.merge(
@@ -723,7 +723,7 @@ def classify_progression_spare_ad_fair(spare_ad_data, progression_data,
 def classify_progression_adas_mmse_fair(adas_data, mmse_data,
                                          progression_data, common_subjects):
     print("\n" + "=" * 80)
-    print("🧠  Cognitive RoC (ADAS + MMSE) — MCI Stable vs MCI Progressor  (LR + RF)")
+    print("Cognitive RoC (ADAS + MMSE) — MCI Stable vs MCI Progressor  (LR + RF)")
     print("=" * 80)
 
     prog_common    = progression_data[progression_data['id'].isin(common_subjects)]
@@ -740,7 +740,7 @@ def classify_progression_adas_mmse_fair(adas_data, mmse_data,
             print(f"   {name} RoC shape: {roc.shape}")
 
     if not cognitive_data:
-        print("   ❌ No cognitive data available")
+        print("No cognitive data available")
         return None, None, None, None
 
     combined_cognitive = None
@@ -765,7 +765,7 @@ def classify_multimodal_roc_fair(roi_roc_data, spare_ad_roc_data,
                                   cognitive_roc_data, progression_data,
                                   common_subjects):
     print("\n" + "=" * 80)
-    print("🌟  Multimodal RoC (145 ROI + SPARE-AD + Cognitive) — LR + RF")
+    print("Multimodal RoC (145 ROI + SPARE-AD + Cognitive) — LR + RF")
     print("=" * 80)
 
     prog_common     = progression_data[
@@ -795,7 +795,7 @@ def classify_multimodal_roc_fair(roi_roc_data, spare_ad_roc_data,
         multimodal_data = multimodal_data.merge(cog_common, on='id', how='inner')
         print(f"   After Cognitive merge:{len(multimodal_data)} subjects")
 
-    print(f"\n   ✅ Final multimodal dataset: {len(multimodal_data)} subjects")
+    print(f"\nFinal multimodal dataset: {len(multimodal_data)} subjects")
 
     X, y = prepare_X_y(multimodal_data)
 
@@ -809,9 +809,9 @@ def classify_multimodal_roc_fair(roi_roc_data, spare_ad_roc_data,
     print(f"      Total:             {X.shape[1]}")
     expected = 145 + 1 + 2
     if X.shape[1] != expected:
-        print(f"   ⚠️  Expected {expected} features, got {X.shape[1]}")
+        print(f"Expected {expected} features, got {X.shape[1]}")
     else:
-        print(f"   ✅ Feature count correct ({expected})")
+        print(f"Feature count correct ({expected})")
     print(f"   Progressors: {y.sum()}/{len(y)}")
 
     results, oof_lr, oof_rf = run_both_classifiers(X, y, label='Multimodal')
@@ -969,9 +969,9 @@ def plot_lr_significance(all_results, sig_summary, output_dir):
 
 def main():
     print("=" * 80)
-    print("🧠  MCI STABLE vs MCI PROGRESSOR — MULTIMODAL TRAJECTORY CLASSIFICATION")
-    print("     Classifiers: Logistic Regression (linear) + Random Forest (non-linear)")
-    print("     Significance: Paired t-test (fold AUCs) + DeLong test (OOF probas)")
+    print("MCI STABLE vs MCI PROGRESSOR — MULTIMODAL TRAJECTORY CLASSIFICATION")
+    print("Classifiers: Logistic Regression (linear) + Random Forest (non-linear)")
+    print("Significance: Paired t-test (fold AUCs) + DeLong test (OOF probas)")
     print("=" * 80)
 
     # ── Step 1: Load covariates ───────────────────────────────────────────────
@@ -983,11 +983,11 @@ def main():
         )
         print(f"   Loaded longitudinal data: {len(longitudinal_covariates):,} rows")
     except FileNotFoundError:
-        print("   ❌ Longitudinal covariates file not found"); return
+        print("Longitudinal covariates file not found"); return
 
     progression_data = get_progression_status(longitudinal_covariates)
     if len(progression_data) == 0:
-        print("   ❌ No MCI subjects found"); return
+        print("No MCI subjects found"); return
 
     # ── Step 2: Load trajectories ─────────────────────────────────────────────
     print(f"\n{'='*20} STEP 2: LOADING TRAJECTORIES {'='*20}")
@@ -1029,7 +1029,7 @@ def main():
         roi_roc_data, spare_ad_roc_data, cognitive_roc_data, progression_data)
 
     if not common_subjects:
-        print("   ❌ No common subjects found"); return
+        print("No common subjects found"); return
 
     np.save('common_subjects.npy', np.array(sorted(common_subjects)))
     print(f"   💾 Saved {len(common_subjects)} subjects to common_subjects.npy")
@@ -1091,7 +1091,7 @@ def main():
                 best_overall_classifier = label
 
     print(f"\n{'='*80}")
-    print(f"🏆 BEST: {best_overall_modality}  [{best_overall_classifier}]  "
+    print(f"BEST: {best_overall_modality}  [{best_overall_classifier}]  "
           f"AUC = {best_overall_auc:.3f}")
     print("=" * 80)
 
@@ -1126,23 +1126,23 @@ def main():
         all_results, oof_probas=oof_probas, common_y_true=common_y_true)
 
     # Save significance results to CSV
-    os.makedirs('./miccai26/', exist_ok=True)
+    os.makedirs('./nataging/', exist_ok=True)
     if 'ttest_LR' in sig_summary and sig_summary['ttest_LR'] is not None:
         pd.concat([sig_summary.get('ttest_LR', pd.DataFrame()),
                    sig_summary.get('ttest_RF', pd.DataFrame())],
                   ignore_index=True
-        ).to_csv('./miccai26/significance_ttest.csv', index=False)
-        print("   💾 Paired t-test results saved to ./miccai26/significance_ttest.csv")
+        ).to_csv('./nataging/significance_ttest.csv', index=False)
+        print("   💾 Paired t-test results saved to ./nataging/significance_ttest.csv")
 
     if 'delong' in sig_summary:
         sig_summary['delong'].to_csv(
-            './miccai26/significance_delong.csv', index=False)
-        print("   💾 DeLong test results saved to ./miccai26/significance_delong.csv")
+            './nataging/significance_delong.csv', index=False)
+        print("   💾 DeLong test results saved to ./nataging/significance_delong.csv")
 
     # ── Step 8: Plot ──────────────────────────────────────────────────────────
     print(f"\n{'='*20} STEP 8: VISUALISATION {'='*20}")
 
-    plot_lr_significance(all_results, sig_summary, output_dir='./miccai26/')
+    plot_lr_significance(all_results, sig_summary, output_dir='./nataging/')
 
     print("\n" + "=" * 80)
     print("🎉 PIPELINE COMPLETE")
