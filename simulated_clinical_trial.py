@@ -1,34 +1,122 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-
-"""
-Strict MCI/mild AD clinical trial simulation (predicted-slope-only)
-
-- Screening:
-    Age ∈ [55, 86]
-    CDR_Global ∈ {0.5, 1.0}
-    MMSE ≥ 20
-
-- Enrichment:
-    Top 30% fastest predicted hippocampal atrophy (DKGP or RNN-AD)
-
-- Biomarker window:
-    Hippocampal slope = predicted ΔVolume per year over 36 ± 12 months
-
-- Endpoint window:
-    MMSE slope = ΔMMSE over 36 ± 12 months
-
-- Treatment effect logic:
-    Applied only to true progressors (fast MMSE decliners, median split),
-    not uniformly to all enriched subjects.
-
-- Outputs:
-    ROC curves with 95% CI
-    Power curves with 95% CI
-    Required-N curves with 95% CI
-    Composite (Nature-Aging-style) figure
-"""
-
+# ==============================================================================
+# Experiment: Clinical Trial Simulation — Predicted Hippocampal Slope as an
+#             Enrichment Biomarker for MCI/Mild AD Trials
+# ==============================================================================
+#
+# OVERVIEW
+# --------
+# This script simulates a clinical trial for MCI and mild Alzheimer's Disease,
+# evaluating whether DKGP-predicted hippocampal atrophy slopes can be used to
+# enrich trial cohorts with fast progressors — subjects most likely to show
+# measurable decline over the trial period and therefore most likely to benefit
+# from a disease-modifying treatment. RNN-AD predicted slopes are evaluated as
+# a comparative enrichment strategy. Statistical power and required sample size
+# are computed across a range of treatment effect sizes.
+#
+# MOTIVATION
+# ----------
+# Clinical trials in AD are expensive and frequently underpowered because most
+# MCI subjects decline slowly, diluting the treatment signal. Enriching trial
+# cohorts with subjects predicted to decline rapidly can substantially reduce
+# the required sample size and increase statistical power for a given effect
+# size. Hippocampal volume loss is one of the most established biomarkers of
+# AD progression. If DKGP-predicted hippocampal slopes can identify fast
+# decliners before a trial begins (using only predicted trajectories, which
+# could be derived non-invasively from imaging), this supports their use as a
+# practical enrichment tool.
+#
+# TRIAL DESIGN
+# ------------
+# This is a two-arm parallel-group trial simulation. The key design choices
+# reflect standard MCI/mild AD trial practice:
+#
+#   Screening criteria:
+#     Age ∈ [55, 86]
+#     CDR Global ∈ {0.5, 1.0}   (mild impairment)
+#     MMSE ≥ 20                  (not severe)
+#
+#   Enrichment:
+#     Top 30% fastest predicted hippocampal atrophy (DKGP or RNN-AD)
+#     Score = -predicted_slope (larger = faster atrophy)
+#     Threshold = 70th percentile of enrichment score
+#
+#   Biomarker window (for enrichment):
+#     Hippocampal slope = predicted ΔVolume/year over 36 ± 12 months
+#     (MUSE ROI H_MUSE_Volume_47 = right hippocampus)
+#
+#   Endpoint window:
+#     MMSE slope = ΔMMSE over 36 ± 12 months
+#     (closest follow-up visit within ±12 months of 36-month target)
+#
+#   Three enrichment strategies compared:
+#     1. DKGP enrichment   — top 30% by DKGP predicted hippocampal slope
+#     2. RNN-AD enrichment — top 30% by RNN-AD predicted hippocampal slope
+#     3. No enrichment     — full screened cohort (baseline comparison)
+#
+# TREATMENT EFFECT MODEL
+# ----------------------
+# Treatment effect is applied only to true progressors (fast MMSE decliners,
+# defined by a median split on MMSE_delta_36m within the enriched cohort),
+# not uniformly to all enriched subjects. This reflects the realistic
+# assumption that disease-modifying treatments primarily benefit subjects who
+# are actively progressing, not those who remain stable over the trial period.
+#
+# The treatment effect is modelled as a multiplicative slowing factor applied
+# to the MMSE decline of fast decliners:
+#   MMSE_treated = MMSE_control * effect_factor
+# where effect_factor ∈ {0.85, 0.83, 0.81, 0.79, 0.77, 0.75}
+# corresponding to 15–25% slowing of MMSE decline.
+#
+# STATISTICAL FRAMEWORK
+# ---------------------
+# - Effect size: Cohen's d, computed from the difference in mean MMSE delta
+#   between treated and control arms (treatment applied only to progressors)
+# - Power: computed analytically via statsmodels TTestIndPower (two-sample
+#   independent t-test, α = 0.05, two-sided)
+# - Required N: solved for 80% power at each effect size
+# - All quantities bootstrapped (ROC: n=1000, power: n=800, N: n=400) to
+#   produce 95% CIs reported in the figure and output CSVs
+#
+# ROC ANALYSIS
+# ------------
+# ROC curves evaluate how well each enrichment biomarker (DKGP or RNN-AD
+# predicted hippocampal slope) discriminates fast MMSE decliners (label=1,
+# below-median MMSE_delta_36m) from slow decliners (label=0). AUC and 95% CI
+# are computed by bootstrapping the full ROC curve over 1000 resamples.
+#
+# DATA
+# ----
+# - Longitudinal covariates : longitudinal_covariates_subjectsamples_longclean_
+#                             hmuse_convs_allstudies.csv
+#                             (Age, CDR_Global, MMSE, PTID, Time per visit)
+# - DKGP hippo predictions  : manuscript1/OldHarmonizedMUSEROIs.csv
+#                             (id, time, score_H_MUSE_Volume_47 per visit)
+# - RNN-AD hippo predictions : rnn_volume47_results_5folds/
+#                              all_folds_predictions.csv
+#                             (subject_id, time, predicted per visit)
+# - MMSE outcomes           : mmse_clinical_trial_data.csv
+#                             (PTID, Time, MMSE_nearest_2.0 per visit)
+#
+# OUTPUTS
+# -------
+# All outputs use the prefix defined by OUTPUT_PREFIX:
+#
+# Figures:
+#   {prefix}_composite_fig.{png,svg,pdf}
+#       Nature Aging-style 3-panel figure:
+#       (a) ROC curves with 95% CI bootstrapped bands
+#       (b) Power vs treatment effect size (15–25% slowing) with 95% CI
+#       (c) Required N per arm vs treatment effect size with 95% CI
+#
+# CSVs:
+#   {prefix}_roc_auc.csv
+#       Model, AUC mean, AUC 2.5th percentile, AUC 97.5th percentile
+#   {prefix}_power.csv
+#       Model, EffectPct, Power mean, Power lower CI, Power upper CI
+#   {prefix}_sample_size.csv
+#       Model, EffectPct, Required N mean, N lower CI, N upper CI
+# ==============================================================================
+ 
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt

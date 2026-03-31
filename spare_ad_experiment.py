@@ -1,13 +1,98 @@
-'''
-Manuscript1: SPARE-AD Longitudinal Analysis for Nature Aging
+# ==============================================================================
+# Experiment: SPARE-AD Longitudinal Trajectory Analysis and Discrimination
+#             Real vs. Predicted Rate-of-Change as a Diagnostic Biomarker
+# ==============================================================================
+#
+# OVERVIEW
+# --------
+# This script analyses whether the rate of change (RoC) of DKGP-predicted
+# SPARE-AD trajectories can discriminate between clinically relevant diagnostic
+# groups across different longitudinal time windows. It evaluates both real
+# (observed) and predicted SPARE-AD RoC as a biomarker, comparing their
+# discriminative performance using ROC-AUC, PR-AUC, F1, and Youden-index
+# operating point metrics.
+#
+# MOTIVATION
+# ----------
+# SPARE-AD (Spatial Pattern of Abnormality for Recognition of Early Alzheimer's
+# Disease) is an imaging-derived composite score that captures the multivariate
+# pattern of brain atrophy associated with AD. Its longitudinal rate of change
+# is a sensitive marker of disease progression. A key validation question is:
+# do DKGP-predicted SPARE-AD trajectories preserve the discriminative signal
+# present in the real trajectories? If predicted RoC performs comparably to
+# real RoC for separating progressors from stable subjects, this supports the
+# clinical utility of trajectory prediction as a non-invasive screening tool.
+#
+# EXPERIMENTAL DESIGN
+# -------------------
+# Two clinically meaningful binary classification tasks are evaluated:
+#
+#   1. Healthy Control vs CN Progressor to MCI
+#        Identifies subjects who appear cognitively normal at baseline but
+#        will later develop MCI — the earliest detectable transition.
+#
+#   2. MCI Stable vs MCI Progressor
+#        Separates MCI subjects who remain stable from those who convert to
+#        AD — the most clinically actionable distinction for trial enrichment.
+#
+# For each subject, the SPARE-AD RoC is computed as the OLS slope of their
+# trajectory (real or predicted) up to each observed time point. Subjects are
+# then grouped by time window (0–1, 1–2, 2–3, 3–4, 4–5, 5+ years from
+# baseline) and discrimination is evaluated within each window. This reveals
+# how early in the follow-up period the predicted trajectories become
+# informative.
+#
+# DISCRIMINATION METRICS
+# ----------------------
+# For each time window × comparison pair:
+#   - ROC-AUC + Hanley-McNeil SE : overall discrimination (threshold-free)
+#   - PR-AUC (average precision) + bootstrap SE (n=1000) : discrimination
+#     under class imbalance; baseline = class prevalence
+#   - Optimal F1 + precision + recall : performance at the best PR threshold
+#   - Youden index operating point : sensitivity/specificity trade-off at the
+#     threshold that maximises J = TPR - FPR
+#   - PPV + FDR at the Youden threshold : clinical utility metrics
+#
+# DATA
+# ----
+# - SPARE-AD predictions : adaptive_shrinkage_predictions_alpha_simple_dkgp_
+#                          SPARE_AD_allstudies.csv
+#                          (columns: id, time, y [real], score [predicted],
+#                          History [number of observed timepoints used])
+# - Longitudinal covars  : longitudinal_covariates_subjectsamples_longclean_
+#                          hmuse_convs_allstudies.csv
+#                          (Age, Sex, Race, Diagnosis, APOE4, Education per visit)
+# - Progression status   : derived from first/last Diagnosis per subject:
+#                          CN→CN = Healthy Control
+#                          CN→MCI = CN Progressor to MCI
+#                          CN→AD = AD Progressor
+#                          MCI→MCI = MCI Stable
+#                          MCI→AD = MCI Progressor
+#                          AD→AD = AD
+#
+# OUTPUTS
+# -------
+# Figures (all saved to ./nataging/):
+#   SPAREAD_ROC_PR_Curves_0to1yr.{png,svg}
+#       2×2 grid of ROC and PR curves for both comparisons at 0-1 years
+#   SPAREAD_ROC_PR_Curves_2to3yr.{png,svg}
+#       2×2 grid of ROC and PR curves for both comparisons at 2-3 years
+#
+# CSVs (all saved to ./nataging/):
+#   SPAREAD_Experiment_Section2_RateOfChange_{datasets}_{biomarker}.csv
+#       Per-subject per-history-length RoC values (real and predicted)
+#   SPAREAD_Experiment_Section2_AdaptedPredictions_{datasets}_{biomarker}.csv
+#       Per-visit predictions with subject metadata and progression status
+#   SPAREAD_Experiment_Discrimination_AllMetrics_by_Time.csv
+#       Full discrimination results for all time bins × comparison pairs
+#   SPAREAD_ManuscriptFocal_AllMetrics.csv
+#       Manuscript-focused subset: 0-1 and 2-3 year bins only
+#
+# Log:
+#   ./nataging/nature_aging_spare_ad_results_{timestamp}.txt
+#       Full console output captured to a timestamped log file
+# ==============================================================================
 
-This script is used to analyze the SPARE-AD longitudinal data and generate the plots for the manuscript.
-
-- Error with history 
-- Discriminative Analysis (ROC Curves + PR Curves)
-
-Updated: Added PR-AUC, F1, Precision, Recall metrics for consistency with other results sections.
-'''
 
 import pandas as pd
 import numpy as np
@@ -38,8 +123,8 @@ class Logger:
 
 # Create log file with timestamp
 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-log_filename = f'./miccai26/nature_aging_spare_ad_results_{timestamp}.txt'
-os.makedirs('./miccai26', exist_ok=True)
+log_filename = f'./nataging/nature_aging_spare_ad_results_{timestamp}.txt'
+os.makedirs('./nataging', exist_ok=True)
 sys.stdout = Logger(log_filename)
 
 import seaborn as sns
@@ -294,8 +379,8 @@ for roi_idx, task in enumerate(roi_names):
 
     df = pd.DataFrame(data=df_metrics_over_time)
     df_roc = pd.DataFrame(data=df_rate_of_change_over_time)
-    df_roc.to_csv('./miccai26/SPAREAD_Experiment_Section2_RateOfChange_'+datasets+'_'+roi_names[roi_idx]+'.csv')
-    df.to_csv('./miccai26/SPAREAD_Experiment_Section2_AdaptedPredictions_'+datasets+'_'+roi_names[roi_idx]+'.csv')
+    df_roc.to_csv('./nataging/SPAREAD_Experiment_Section2_RateOfChange_'+datasets+'_'+roi_names[roi_idx]+'.csv')
+    df.to_csv('./nataging/SPAREAD_Experiment_Section2_AdaptedPredictions_'+datasets+'_'+roi_names[roi_idx]+'.csv')
 
 
 # ================================================================
@@ -415,7 +500,7 @@ for year_bin in year_bins:
         })
 
 results_tobs_df = pd.DataFrame(results_tobs)
-results_tobs_df.to_csv("./miccai26/SPAREAD_Experiment_Discrimination_AllMetrics_by_Time.csv", index=False)
+results_tobs_df.to_csv("./nataging/SPAREAD_Experiment_Discrimination_AllMetrics_by_Time.csv", index=False)
 
 # ================================================================
 # FIGURES — ROC + PR curves side by side, per year bin
@@ -502,8 +587,8 @@ for year_bin in ['0-1', '2-3']:          # manuscript focal bins
 
     plt.tight_layout()
     bin_label = year_bin.replace('+','plus').replace('-','to')
-    plt.savefig(f"./miccai26/SPAREAD_ROC_PR_Curves_{bin_label}yr.png", dpi=300, bbox_inches='tight')
-    plt.savefig(f"./miccai26/SPAREAD_ROC_PR_Curves_{bin_label}yr.svg", dpi=300, bbox_inches='tight')
+    plt.savefig(f"./nataging/SPAREAD_ROC_PR_Curves_{bin_label}yr.png", dpi=300, bbox_inches='tight')
+    plt.savefig(f"./nataging/SPAREAD_ROC_PR_Curves_{bin_label}yr.svg", dpi=300, bbox_inches='tight')
     plt.close()
     print(f"  Saved ROC+PR figure for {year_bin} year bin")
 
@@ -526,7 +611,7 @@ cols  = [
     "F1_Real","Precision_Real","Recall_Real",
 ]
 print(focal[cols].to_string(index=False))
-focal[cols].to_csv("./miccai26/SPAREAD_ManuscriptFocal_AllMetrics.csv", index=False)
+focal[cols].to_csv("./nataging/SPAREAD_ManuscriptFocal_AllMetrics.csv", index=False)
 
-print("\nAll files saved to ./miccai26/")
+print("\nAll files saved to ./nataging/")
 print("Analysis complete.")

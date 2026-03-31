@@ -525,7 +525,7 @@ def load_145_roi_trajectories():
         return roi_data
 
     roi_data = {}
-    manuscript1_dir = './miccai26'
+    manuscript1_dir = './nataging'
     for roi_idx in range(145):
         file_path = (f'{manuscript1_dir}/singletask_MUSE_{roi_idx}'
                      f'_dkgp_population_allstudies.csv')

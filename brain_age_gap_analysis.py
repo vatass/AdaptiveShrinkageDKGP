@@ -9,7 +9,7 @@
 # chronological age) changes over time across diagnostic groups (CN, MCI, AD)
 # and fine-grained progression statuses (e.g. MCI Stable vs MCI Progressor).
 # BAG slopes are computed from both real (observed) SPARE-BA values and
-# DKGP-predicted SPARE-BA trajectories, allowing direct comparison of whether
+# p-DKGP-predicted SPARE-BA trajectories, allowing direct comparison of whether
 # the predicted trajectories preserve clinically meaningful longitudinal signal.
 #
 # MOTIVATION
@@ -17,15 +17,14 @@
 # A positive BAG slope (brain aging faster than chronological age) is a marker
 # of accelerated neurodegeneration. If the DKGP model captures true biological
 # trajectories, predicted BAG slopes should: (1) increase systematically from
-# CN to MCI to AD, (2) separate MCI Progressors from MCI Stable subjects, and
-# (3) correlate with real BAG slopes at the individual level. Validating these
-# properties establishes that DKGP-predicted trajectories are biologically
+# CN to MCI to AD and (2) correlate with real BAG slopes at the individual level.
+# Validating these properties establishes that DKGP-predicted trajectories are biologically
 # meaningful and not merely smooth averages.
 #
 # KEY METHODOLOGICAL DECISIONS
 # ----------------------------
 # 1. Effect size — Glass's Delta (not Cohen's d):
-#      DKGP produces smoother trajectories than raw longitudinal data because
+#      p-DKGP produces smoother trajectories than raw longitudinal data because
 #      it learns the systematic signal while attenuating subject-level noise.
 #      This mechanically compresses within-group variance in predicted slopes,
 #      making Cohen's d computed on predicted slopes artificially inflated and
@@ -41,7 +40,7 @@
 #      The SS approach is exact for unequal group sizes.
 #
 # 3. Pairwise comparisons — all three clinically relevant pairs:
-#      CN vs MCI, MCI vs AD, and CN vs AD (rather than CN vs AD only).
+#      CN vs MCI, MCI vs AD, and CN vs AD.
 #
 # 4. BAG slope quality filters:
 #      Subjects are excluded if they have fewer than 2 timepoints, an age

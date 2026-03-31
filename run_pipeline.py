@@ -53,7 +53,7 @@ def load_and_preprocess_data(
 
     rois = [f"ROI_{i}" for i in range(1, 146)]
 
-    covariates = [f"Covariate{i}" for i in range(1, 6)]  # Αντικαταστήστε το n με τον αριθμό των συνδιακυμάνσεων
+    covariates = [f"Covariate{i}" for i in range(1, 6)]  
 
     features = rois + covariates
 
