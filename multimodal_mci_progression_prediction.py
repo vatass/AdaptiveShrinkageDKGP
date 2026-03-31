@@ -342,8 +342,15 @@ def run_significance_tests(results_dict, oof_probas, common_y_true, alpha=0.05):
 
     if delong_rows:
         delong_df = pd.DataFrame(delong_rows)
-        n_tests   = len(delong_df)
-        delong_df['p_bonferroni']           = (delong_df['p_uncorrected'] * n_tests).clip(upper=1.0)
+        # Bonferroni is applied per classifier (3 unimodal comparisons each),
+        # matching the 3 pre-specified comparisons in the manuscript
+        # (α = 0.05/3 ≈ 0.017). Using len(delong_df)=6 would pool across
+        # classifiers and over-correct.
+        n_tests_per_clf = len(unimodal_keys)   # = 3
+        delong_df['p_bonferroni'] = (
+            delong_df.groupby('Classifier')['p_uncorrected']
+            .transform(lambda p: (p * n_tests_per_clf).clip(upper=1.0))
+        )
         delong_df['significant_bonferroni'] = delong_df['p_bonferroni'] < alpha
         summary['delong'] = delong_df
 
