@@ -1,6 +1,4 @@
-# Adaptive Shrinkage Deep Kernel Gaussian Process 🚧 [WIP]
-
-> **Note:** This repository is currently under active development. Some features may be incomplete or subject to change.
+# Adaptive Shrinkage Deep Kernel Gaussian Process
 
 This repository contains the official implementation of the paper:
 
