@@ -213,7 +213,6 @@ def train_population_model(
     
     print("Training population DKGP model...")
     
-    # Δημιουργία του μοντέλου χωρίς τα περιττά ορίσματα
     model = PopulationDKGP(
         train_x=data['train_x'],
         train_y=data['train_y'],
@@ -230,7 +229,6 @@ def train_population_model(
         lr=0.01844 
     )
     
-    # Αποθήκευση του μοντέλου
     model.save_model(model_save_path)
     
     return model

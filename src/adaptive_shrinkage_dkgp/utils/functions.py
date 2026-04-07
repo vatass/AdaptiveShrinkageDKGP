@@ -18,22 +18,6 @@ pal_interval = sns.color_palette("ch:s=.25,rot=-.25", as_cmap=False)
 pal_coverage = sns.color_palette("ch:s=.25,rot=-.25", as_cmap=False)
 
 
-class MUSEMonotonicDataset(Dataset): 
-    def __init__(self, x,y): 
-
-        self.x = x 
-        self.y = y 
-        self.data = list(zip(x, y))
-
-    def __len__(self): 
-        return len(self.x)
-        
-
-    def __getitem__(self, index): 
-        return self.data[index] 
-        pass 
-
-
 
 class MUSEDataset(Dataset): 
     def __init__(self, x, y): 

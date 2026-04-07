@@ -62,7 +62,6 @@ class SubjectSpecificDKGP(BaseDeepKernel):
             kernel=kernel,
             mean=mean
         )
-        # Ensure consistent layer naming
         self.feature_extractor = LargeFeatureExtractor(
             datadim=input_dim,
             depth=[(input_dim, int(input_dim/2))],  
