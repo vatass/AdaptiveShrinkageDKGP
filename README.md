@@ -5,6 +5,17 @@ This repository contains the official implementation of the paper:
 **"Adaptive Shrinkage Estimation for Personalized Deep Kernel Regression in Modeling Brain Trajectories"**  
 *Accepted at International Conference on Learning Representations (ICLR) 2025*
 
+It also includes code for a series of clinical validation experiments:
+
+1. **Analysis of group-level differences between progressors and non-progressors in predicted trajectories** (`progressors_non_progressors_group_differences.py`)
+2. **MCI progression prediction using 145 predicted volumetric ROIs** (`mci_progression_prediction_volumes.py`)
+3. **Diagnosis classification using real and predicted volumes to evaluate trajectory fidelity** (`diagnosis_classification.py`)
+4. **Clinical trial simulation for evaluating prognostic enrichment** (`simulated_clinical_trial.py`)
+5. **MCI progression prediction using personalized predicted SPARE-AD rate of change** (`spare_ad_experiment.py`)
+6. **Predicted Brain Age Gap analysis** (`brain_age_gap_analysis.py`)
+7. **MCI progression prediction using multimodal rates of change**  
+   *(145 volumetric ROIs, SPARE-AD, ADAS-Cog 13, and MMSE)*
+
 ## Overview
 
 ![Adaptive Shrinkage Deep Kernel Gaussian Process Method](docs/method_visualization.png)
