@@ -49,15 +49,11 @@ def load_and_preprocess_data(
 
     subjects = data['PTID'].unique()
 
-    # print('Subjects', subjects)
-
     rois = [f"ROI_{i}" for i in range(1, 146)]
 
     covariates = [f"Covariate{i}" for i in range(1, 6)]  
 
     features = rois + covariates
-
-    # print(features)
     
     # Convert the Data to the X,Y, PTID format that is ideal for our problem. 
     # X should be the ROIs, the Covariates at the first acquisition of the subejct and then the Time the Y should be the ROI Value at time T 
@@ -111,10 +107,6 @@ def load_and_preprocess_data(
     # Extract data for each set
     def extract_data(ids):
         subset = samples_df[samples_df['PTID'].isin(ids)]
-
-        print(subset)
-
-        print(type(subset['X'].values))
 
         x_numeric = np.array([np.array(xi, dtype=np.float32) for xi in subset['X'].values])
 
@@ -281,10 +273,8 @@ def create_oracle_dataset(
     # Initialize and train subject-specific models for validation subjects
     y_ss_list, V_ss_list, y_pp_list, V_pp_list, n_obs_list, T_obs_list, oracle_alpha_list = [], [], [], [], [], [], []
     
-    # Δημιουργία καταλόγου για τα αποτελέσματα αν δεν υπάρχει
     os.makedirs(os.path.join(output_path, 'plots'), exist_ok=True)
     
-    # Δημιουργία DataFrame για την αποθήκευση των αποτελεσμάτων
     results_data = []
     
     for subject_id in val_ids:
@@ -302,8 +292,8 @@ def create_oracle_dataset(
             
             print(f'Training subject-specific model for subject {subject_id} with {i+1} observations...')
             # Get subject data up to current observation for training the subject-specific model
-            x_sub_observed = subject_data_x[:i+1]  # Χρησιμοποιούμε τα δεδομένα του συγκεκριμένου υποκειμένου
-            y_sub_observed = subject_data_y[:i+1]  # Χρησιμοποιούμε τα δεδομένα του συγκεκριμένου υποκειμένου
+            x_sub_observed = subject_data_x[:i+1] 
+            y_sub_observed = subject_data_y[:i+1]  
 
             print(f'x_sub_observed: {x_sub_observed.shape}')
             print(f'y_sub_observed: {y_sub_observed.shape}')
@@ -315,15 +305,13 @@ def create_oracle_dataset(
                 input_dim=pop_model.input_dim,
                 latent_dim=pop_model.latent_dim,
                 population_params=pop_model.get_deep_params(),
-                learning_rate=0.01844,  # Ακριβής ρυθμός μάθησης
-                weight_decay=0.01,      # Weight decay
-                n_epochs=400            # Αριθμός εποχών
+                learning_rate=0.01844, 
+                weight_decay=0.01,     
+                n_epochs=400       
             )
             
-            # Εκπαίδευση με παρακολούθηση της απώλειας
             history = ss_model.fit(x_sub_observed, y_sub_observed, verbose=True)
             
-            # Έλεγχος αν η απώλεια μειώνεται
             if len(history['train_loss']) > 1:
                 initial_loss = history['train_loss'][0]
                 final_loss = history['train_loss'][-1]
@@ -337,22 +325,18 @@ def create_oracle_dataset(
             # Get predictions for the whole trajectory
             y_ss, _, _, V_ss = ss_model.predict(x_sub_observed)
             
-            # Εκτύπωση στατιστικών για να βεβαιωθούμε ότι το μοντέλο αλλάζει
             print(f"Predictions summary for subject {subject_id} with {i+1} observations:")
             print(f"  Population model - Mean: {y_pp.mean().item():.4f}, Std: {y_pp.std().item():.4f}")
             print(f"  Subject-specific model - Mean: {y_ss.mean().item():.4f}, Std: {y_ss.std().item():.4f}")
             print(f"  Ground truth - Mean: {y_true.mean().item():.4f}, Std: {y_true.std().item():.4f}")
             
-            # Μετατροπή σε numpy arrays για υπολογισμούς
             y_pp_np = y_pp.cpu().numpy() if isinstance(y_pp, torch.Tensor) and y_pp.is_cuda else y_pp.numpy() if isinstance(y_pp, torch.Tensor) else y_pp
             y_true_np = y_true.cpu().numpy() if isinstance(y_true, torch.Tensor) and y_true.is_cuda else y_true.numpy() if isinstance(y_true, torch.Tensor) else y_true
             y_ss_np = y_ss.cpu().numpy() if isinstance(y_ss, torch.Tensor) and y_ss.is_cuda else y_ss.numpy() if isinstance(y_ss, torch.Tensor) else y_ss
             
-            # Υπολογισμός των MSE
             mse_pop = ((y_pp_np - y_true_np) ** 2).mean()
             mse_ss = ((y_ss_np - y_true_np) ** 2).mean()
             
-            # Εκτύπωση των σφαλμάτων
             print(f"  MSE Population: {mse_pop:.4f}")
             print(f"  MSE Subject-Specific: {mse_ss:.4f}")
             print(f"  Improvement: {(mse_pop - mse_ss) / mse_pop * 100:.2f}%")
@@ -408,8 +392,6 @@ def create_oracle_dataset(
             plt.savefig(os.path.join(output_path, 'plots', f'subject_{subject_id}_trajectory_obs_{i}.png'))
             plt.close()
             
-            # Αποθήκευση των μέσων τιμών των προβλέψεων και των διακυμάνσεων
-            # Μετατροπή σε scalar τιμές
             if isinstance(y_ss, torch.Tensor):
                 y_ss_mean = y_ss.mean().item()
                 V_ss_mean = V_ss.mean().item() if isinstance(V_ss, torch.Tensor) else float(V_ss.mean())
@@ -424,34 +406,28 @@ def create_oracle_dataset(
                 y_pp_mean = float(y_pp.mean())
                 V_pp_mean = float(V_pp.mean())
             
-            # Προσθήκη των scalar τιμών στις λίστες
             y_ss_list.append(y_ss_mean)
             V_ss_list.append(V_ss_mean)
             y_pp_list.append(y_pp_mean)
             V_pp_list.append(V_pp_mean)
             n_obs_list.append(i + 1)
-            # Διασφάλιση ότι προσθέτουμε έναν αριθμό και όχι έναν πίνακα
             if isinstance(x_sub_observed, torch.Tensor):
                 time_value = x_sub_observed[-1, -1].item()
             else:
                 time_value = x_sub_observed[-1, -1]
             T_obs_list.append(time_value)
 
-            # Υπολογισμός του oracle alpha με βάση τις μέσες τιμές
-            # Μετατροπή σε numpy arrays για υπολογισμούς
             if isinstance(y_true, torch.Tensor):
                 y_true_mean = y_true.mean().item()
             else:
                 y_true_mean = float(y_true.mean())
                 
-            # Υπολογισμός του oracle alpha με τις μέσες τιμές
             oracle_alpha = optimize_alpha_with_subject_simple(
                 np.array([y_pp_mean]), 
                 np.array([y_ss_mean]), 
                 np.array([y_true_mean])
             )
             
-            # Επαλήθευση της συμπεριφοράς του oracle alpha
             print(f"Subject {subject_id}, Obs {i+1}:")
             print(f"  MSE Population: {mse_pop:.4f}")
             print(f"  MSE Subject-Specific: {mse_ss:.4f}")
@@ -459,7 +435,6 @@ def create_oracle_dataset(
             
             oracle_alpha_list.append(oracle_alpha)
             
-            # Αποθήκευση των αποτελεσμάτων στο DataFrame
             results_data.append({
                 'subject_id': subject_id,
                 'n_observations': i + 1,
@@ -475,39 +450,31 @@ def create_oracle_dataset(
     print(f"V_ss_list: {len(V_ss_list)}")
     print(f"T_obs_list: {len(T_obs_list)}")
     print(f"oracle_alpha_list: {len(oracle_alpha_list)}")
-    
-    # Μετατροπή των λιστών σε numpy arrays
-    # Τώρα που όλα τα στοιχεία είναι scalar, η μετατροπή είναι απλή
+
     y_pp_array = np.array(y_pp_list)
     V_pp_array = np.array(V_pp_list)
     y_ss_array = np.array(y_ss_list)
     V_ss_array = np.array(V_ss_list)
     
-    # Για T_obs_list και oracle_alpha_list, που είναι πιο απλά
     T_obs_array = np.array(T_obs_list)
     oracle_alpha_array = np.array(oracle_alpha_list)
     
-    # Συνδυασμός όλων των arrays σε έναν πίνακα Nx6
-    # Όπου το Nx5 είναι τα features και το Nx1 είναι το target
+
     features = np.column_stack((y_pp_array, V_pp_array, y_ss_array, V_ss_array, T_obs_array))
     
-    # Δημιουργία του oracle dataset ως numpy arrays
-    X = features  # Nx5 array με τα features
-    y = oracle_alpha_array  # Nx1 array με τα oracle alpha
+    X = features
+    y = oracle_alpha_array 
     
-    # Αποθήκευση του oracle dataset με pickle
     oracle_dataset_path_np = os.path.join(output_path, f'oracle_dataset_{target}.pkl')
     with open(oracle_dataset_path_np, 'wb') as f:
         pickle.dump({'X': X, 'y': y}, f)
     
-    # Αποθήκευση των αποτελεσμάτων σε CSV
     results_df = pd.DataFrame(results_data)
     results_df.to_csv(oracle_csv_path, index=False)
     
     print(f"Oracle dataset saved to {oracle_dataset_path_np}")
     print(f"Oracle dataset results saved to {oracle_csv_path}")
     
-    # Επιστροφή του oracle dataset ως dictionary για συμβατότητα
     oracle_dataset = {
         'X': X,
         'y': y
@@ -542,16 +509,13 @@ def train_adaptive_shrinkage(
     """
     print("Training adaptive shrinkage estimator...")
     
-    # Έλεγχος αν το oracle dataset υπάρχει ήδη
     oracle_dataset_path = os.path.join(output_path, f'oracle_dataset_{target}.pkl')
     
     if os.path.exists(oracle_dataset_path):
         print(f"Loading oracle dataset from {oracle_dataset_path}")
-        # Φόρτωση του oracle dataset από το αρχείο pickle
         with open(oracle_dataset_path, 'rb') as f:
             oracle_dataset = pickle.load(f)
     else:
-        # Δημιουργία του oracle dataset
         oracle_dataset = create_oracle_dataset(
             pop_model=pop_model,
             data=data,
@@ -561,22 +525,17 @@ def train_adaptive_shrinkage(
             target=target
         )
     
-    # Split the oracle dataset into training and validation sets
     print("Splitting oracle dataset into training and validation sets...")
     
-    # Λήψη των X και y από το oracle dataset
-    X = oracle_dataset['X']  # Nx5 array με τα features
-    y = oracle_dataset['y']  # Nx1 array με τα oracle alpha
+    X = oracle_dataset['X']  
+    y = oracle_dataset['y'] 
     
-    # Διαχωρισμός σε σύνολα εκπαίδευσης και επικύρωσης (80% train, 20% validation)
     X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=0.2, random_state=42)
     
     print(f"Training set size: {X_train.shape[0]}, Validation set size: {X_val.shape[0]}")
     
-    # Hyperparameter tuning
     print("Performing hyperparameter tuning...")
     
-    # Ορισμός των υπερπαραμέτρων για βελτιστοποίηση
     param_grid = {
         'n_estimators': [50, 100, 200],
         'learning_rate': [0.01, 0.05, 0.1],
@@ -584,10 +543,8 @@ def train_adaptive_shrinkage(
         'subsample': [0.7, 0.8, 0.9]
     }
     
-    # Δημιουργία του μοντέλου XGBoost για βελτιστοποίηση
     xgb_model = xgb.XGBRegressor(random_state=42)
     
-    # Εκτέλεση της βελτιστοποίησης υπερπαραμέτρων με 5-fold cross-validation
     grid_search = GridSearchCV(
         estimator=xgb_model,
         param_grid=param_grid,
@@ -599,15 +556,12 @@ def train_adaptive_shrinkage(
     
     grid_search.fit(X_train, y_train)
     
-    # Εμφάνιση των βέλτιστων υπερπαραμέτρων
     print(f"Best parameters: {grid_search.best_params_}")
     print(f"Best cross-validation score: {-grid_search.best_score_:.4f} MSE")
     
-    # Αξιολόγηση του μοντέλου στο σύνολο επικύρωσης
     best_model = grid_search.best_estimator_
     val_predictions = best_model.predict(X_val)
     
-    # Υπολογισμός μετρικών αξιολόγησης
     mse = mean_squared_error(y_val, val_predictions)
     mae = mean_absolute_error(y_val, val_predictions)
     r2 = r2_score(y_val, val_predictions)
@@ -616,7 +570,6 @@ def train_adaptive_shrinkage(
     print(f"Validation MAE: {mae:.4f}")
     print(f"Validation R²: {r2:.4f}")
     
-    # Οπτικοποίηση των προβλέψεων έναντι των πραγματικών τιμών
     plt.figure(figsize=(10, 6))
     plt.scatter(y_val, val_predictions, alpha=0.7)
     plt.plot([y_val.min(), y_val.max()], [y_val.min(), y_val.max()], 'k--', lw=2)
@@ -627,7 +580,6 @@ def train_adaptive_shrinkage(
     plt.savefig(os.path.join(output_path, 'adaptive_shrinkage_validation.png'))
     plt.close()
     
-    # Οπτικοποίηση της σημαντικότητας των χαρακτηριστικών
     feature_importance = best_model.feature_importances_
     feature_names = ['Population Prediction', 'Population Variance', 
                      'Subject-Specific Prediction', 'Subject-Specific Variance', 
@@ -641,7 +593,6 @@ def train_adaptive_shrinkage(
     plt.savefig(os.path.join(output_path, 'adaptive_shrinkage_feature_importance.png'))
     plt.close()
     
-    # Δημιουργία και εκπαίδευση του τελικού μοντέλου με τις βέλτιστες υπερπαραμέτρους
     print("Training final adaptive shrinkage model...")
     shrinkage = AdaptiveShrinkage(
         n_estimators=grid_search.best_params_['n_estimators'],
@@ -650,14 +601,11 @@ def train_adaptive_shrinkage(
         subsample=grid_search.best_params_['subsample']
     )
     
-    # Εκπαίδευση του μοντέλου με όλα τα δεδομένα
     shrinkage.model = best_model
     
-    # Αποθήκευση του μοντέλου
     print("Saving adaptive shrinkage model...")
     shrinkage.save_model(model_save_path)
     
-    # Αποθήκευση των βέλτιστων υπερπαραμέτρων
     with open(weights_save_path, 'w') as f:
         json.dump(grid_search.best_params_, f)
     
@@ -1045,9 +993,7 @@ def predict(
             ss_var = ss_var.cpu().numpy() if ss_var.is_cuda else ss_var.numpy()
     
     # Prepare features
-    # Διασφάλιση ότι τα δεδομένα έχουν τη σωστή μορφή
     if isinstance(pop_pred, np.ndarray) and pop_pred.ndim > 1:
-        # Αν έχουμε πολυδιάστατα δεδομένα, παίρνουμε την πρώτη διάσταση
         pop_pred_val = pop_pred[:, 0].reshape(-1, 1)
         ss_pred_val = ss_pred[:, 0].reshape(-1, 1)
         
@@ -1056,7 +1002,6 @@ def predict(
         if ss_var is not None:
             ss_var_val = ss_var[:, 0].reshape(-1, 1)
     else:
-        # Αν έχουμε μονοδιάστατα δεδομένα
         pop_pred_val = pop_pred.reshape(-1, 1)
         ss_pred_val = ss_pred.reshape(-1, 1)
         
@@ -1065,14 +1010,12 @@ def predict(
         if ss_var is not None:
             ss_var_val = ss_var.reshape(-1, 1)
     
-    # Δημιουργία του feature vector
     features = []
     features.append(pop_pred_val)
     
     if pop_var is not None:
         features.append(pop_var_val)
     else:
-        # Αν δεν έχουμε διακύμανση, προσθέτουμε μηδενικά
         features.append(np.zeros_like(pop_pred_val))
         
     features.append(ss_pred_val)
@@ -1080,25 +1023,18 @@ def predict(
     if ss_var is not None:
         features.append(ss_var_val)
     else:
-        # Αν δεν έχουμε διακύμανση, προσθέτουμε μηδενικά
         features.append(np.zeros_like(ss_pred_val))
         
-    # Προσθήκη του αριθμού παρατηρήσεων
     n_obs_reshaped = n_obs.reshape(-1, 1) if isinstance(n_obs, np.ndarray) else np.array([[n_obs]])
     features.append(n_obs_reshaped)
     
-    # Συνένωση των features
     X = np.hstack(features)
     
-    # Πρόβλεψη των βαρών
     adaptive_shrinkage_alpha = self.model.predict(X)
     
-    # Διασφάλιση ότι το alpha είναι στο διάστημα [0, 1]
     adaptive_shrinkage_alpha = np.clip(adaptive_shrinkage_alpha, 0, 1)
     
-    # Συνδυασμός των προβλέψεων
     if isinstance(pop_pred, np.ndarray) and pop_pred.ndim > 1:
-        # Αν έχουμε πολλαπλές προβλέψεις, εφαρμόζουμε το alpha σε κάθε πρόβλεψη
         alpha_expanded = adaptive_shrinkage_alpha.reshape(-1, 1)
         personalized_pred = alpha_expanded * pop_pred + (1 - alpha_expanded) * ss_pred
         
@@ -1107,7 +1043,6 @@ def predict(
         else:
             personalized_pred_var = None
     else:
-        # Αν έχουμε μονοδιάστατα δεδομένα
         personalized_pred = adaptive_shrinkage_alpha * pop_pred + (1 - adaptive_shrinkage_alpha) * ss_pred
         
         if pop_var is not None and ss_var is not None:
@@ -1115,7 +1050,6 @@ def predict(
         else:
             personalized_pred_var = None
     
-    # Επιστροφή των αποτελεσμάτων ως tensor αν τα δεδομένα εισόδου ήταν tensors
     if is_tensor:
         personalized_pred = torch.from_numpy(personalized_pred)
         if personalized_pred_var is not None:
@@ -1166,7 +1100,6 @@ def main():
     # Load and preprocess data
     data, train_ids, val_ids, test_ids, train_subject_indices, val_subject_indices, test_subject_indices = load_and_preprocess_data(data_path)
 
-
     # Set dimensions based on data
     input_dim = data['train_x'].shape[1]
     latent_dim = input_dim // 2
@@ -1204,7 +1137,7 @@ def main():
         val_ids=val_ids,
         val_subject_indices=val_subject_indices,
         output_path=results_dir,
-        target='ROI_48'  # Προσαρμόστε αυτό ανάλογα με το biomarker που χρησιμοποιείτε
+        target='ROI_48' 
     )
     # Evaluate personalization
     results = evaluate_personalization(
