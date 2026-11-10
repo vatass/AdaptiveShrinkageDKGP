@@ -1,617 +1,327 @@
-# ==============================================================================
-# Experiment: SPARE-AD Longitudinal Trajectory Analysis and Discrimination
-#             Real vs. Predicted Rate-of-Change as a Diagnostic Biomarker
-# ==============================================================================
-#
-# OVERVIEW
-# --------
-# This script analyses whether the rate of change (RoC) of DKGP-predicted
-# SPARE-AD trajectories can discriminate between clinically relevant diagnostic
-# groups across different longitudinal time windows. It evaluates both real
-# (observed) and predicted SPARE-AD RoC as a biomarker, comparing their
-# discriminative performance using ROC-AUC, PR-AUC, F1, and Youden-index
-# operating point metrics.
-#
-# MOTIVATION
-# ----------
-# SPARE-AD (Spatial Pattern of Abnormality for Recognition of Early Alzheimer's
-# Disease) is an imaging-derived composite score that captures the multivariate
-# pattern of brain atrophy associated with AD. Its longitudinal rate of change
-# is a sensitive marker of disease progression. A key validation question is:
-# do DKGP-predicted SPARE-AD trajectories preserve the discriminative signal
-# present in the real trajectories? If predicted RoC performs comparably to
-# real RoC for separating progressors from stable subjects, this supports the
-# clinical utility of trajectory prediction as a non-invasive screening tool.
-#
-# EXPERIMENTAL DESIGN
-# -------------------
-# Two clinically meaningful binary classification tasks are evaluated:
-#
-#   1. Healthy Control vs CN Progressor to MCI
-#        Identifies subjects who appear cognitively normal at baseline but
-#        will later develop MCI — the earliest detectable transition.
-#
-#   2. MCI Stable vs MCI Progressor
-#        Separates MCI subjects who remain stable from those who convert to
-#        AD — the most clinically actionable distinction for trial enrichment.
-#
-# For each subject, the SPARE-AD RoC is computed as the OLS slope of their
-# trajectory (real or predicted) up to each observed time point. Subjects are
-# then grouped by time window (0–1, 1–2, 2–3, 3–4, 4–5, 5+ years from
-# baseline) and discrimination is evaluated within each window. This reveals
-# how early in the follow-up period the predicted trajectories become
-# informative.
-#
-# DISCRIMINATION METRICS
-# ----------------------
-# For each time window × comparison pair:
-#   - ROC-AUC + Hanley-McNeil SE : overall discrimination (threshold-free)
-#   - PR-AUC (average precision) + bootstrap SE (n=1000) : discrimination
-#     under class imbalance; baseline = class prevalence
-#   - Optimal F1 + precision + recall : performance at the best PR threshold
-#   - Youden index operating point : sensitivity/specificity trade-off at the
-#     threshold that maximises J = TPR - FPR
-#   - PPV + FDR at the Youden threshold : clinical utility metrics
-#
-# DATA
-# ----
-# - SPARE-AD predictions : adaptive_shrinkage_predictions_alpha_simple_dkgp_
-#                          SPARE_AD_allstudies.csv
-#                          (columns: id, time, y [real], score [predicted],
-#                          History [number of observed timepoints used])
-# - Longitudinal covars  : longitudinal_covariates_subjectsamples_longclean_
-#                          hmuse_convs_allstudies.csv
-#                          (Age, Sex, Race, Diagnosis, APOE4, Education per visit)
-# - Progression status   : derived from first/last Diagnosis per subject:
-#                          CN→CN = Healthy Control
-#                          CN→MCI = CN Progressor to MCI
-#                          CN→AD = AD Progressor
-#                          MCI→MCI = MCI Stable
-#                          MCI→AD = MCI Progressor
-#                          AD→AD = AD
-#
-# OUTPUTS
-# -------
-# Figures (all saved to ./nataging/):
-#   SPAREAD_ROC_PR_Curves_0to1yr.{png,svg}
-#       2×2 grid of ROC and PR curves for both comparisons at 0-1 years
-#   SPAREAD_ROC_PR_Curves_2to3yr.{png,svg}
-#       2×2 grid of ROC and PR curves for both comparisons at 2-3 years
-#
-# CSVs (all saved to ./nataging/):
-#   SPAREAD_Experiment_Section2_RateOfChange_{datasets}_{biomarker}.csv
-#       Per-subject per-history-length RoC values (real and predicted)
-#   SPAREAD_Experiment_Section2_AdaptedPredictions_{datasets}_{biomarker}.csv
-#       Per-visit predictions with subject metadata and progression status
-#   SPAREAD_Experiment_Discrimination_AllMetrics_by_Time.csv
-#       Full discrimination results for all time bins × comparison pairs
-#   SPAREAD_ManuscriptFocal_AllMetrics.csv
-#       Manuscript-focused subset: 0-1 and 2-3 year bins only
-#
-# Log:
-#   ./nataging/nature_aging_spare_ad_results_{timestamp}.txt
-#       Full console output captured to a timestamped log file
-# ==============================================================================
+#!/usr/bin/env python3
+"""
+Manuscript 1 - Section 2.9 / Methods 4.13
+SPARE-AD predicted rate of change: discrimination of CN-to-MCI and
+MCI-to-AD transitions at a fixed 5-year horizon (Figure 8).
 
+Cohort (fixed 5-year horizon, 60 months)
+----------------------------------------
+  CN-to-MCI progressor : baseline CN, first diagnosis change is to MCI, at <= 60 mo
+  MCI-to-AD progressor : baseline MCI, first diagnosis change is to AD, at <= 60 mo
+  CN stable / MCI stable : no diagnosis change at any visit, last visit >= 60 mo
+  All other subjects (baseline AD or unknown, reverters, CN->AD directly,
+  conversions after 60 mo, stable with < 60 mo follow-up) are excluded.
 
-import pandas as pd
-import numpy as np
-import matplotlib.pyplot as plt
-from sklearn.metrics import (
-    roc_curve, auc,
-    precision_recall_curve, average_precision_score,
-    f1_score
-)
-import sys
-import os
-from datetime import datetime
+Prediction-timing windows
+-------------------------
+  0-1 yr : visits with time in [0, 12) months
+  2-3 yr : visits with time in [24, 36) months
+  For each subject and window, the most recent visit in the window is the
+  prediction time tau. Annualized rate of change at tau:
+      predicted = score(tau) / (tau / 12)
+      observed  = y(tau)     / (tau / 12)     (retrospective reference)
+  tau = 0 (baseline only in window) gives no rate and the subject is
+  dropped from that window.
 
-# Set up logging to capture all output
-class Logger:
-    def __init__(self, filename):
-        self.terminal = sys.stdout
-        self.log = open(filename, 'w')
-        
-    def write(self, message):
-        self.terminal.write(message)
-        self.log.write(message)
-        self.log.flush()
-        
-    def flush(self):
-        self.terminal.flush()
-        self.log.flush()
+  Converters whose conversion occurred before a window opens are excluded
+  from that window. The 2-3 yr window is restricted to subjects with a
+  valid predicted rate in the 0-1 yr window (nested, later risk set).
 
-# Create log file with timestamp
-timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-log_filename = f'./nataging/nature_aging_spare_ad_results_{timestamp}.txt'
-os.makedirs('./nataging', exist_ok=True)
-sys.stdout = Logger(log_filename)
+Which personalized prediction is used at tau  (--row_selection)
+---------------------------------------------------------------
+  The predictions file stores, for every personalization level History=h,
+  the full trajectory predicted from the subject's first h visits, with
+  Tobs = time of visit h.
+    prospective (default) : use the most personalized prediction whose
+                            Tobs <= tau, i.e. only observations available at
+                            the time the prediction is issued.
+    original              : use the highest History available at tau,
+                            regardless of Tobs (as in the submitted
+                            analysis; may use visits after tau).
 
-import seaborn as sns
-from scipy import stats
-import pickle
-from os.path import exists
-from matplotlib.pyplot import figure
-from operator import add
+Metrics per window x comparison x feature
+-----------------------------------------
+  ROC-AUC (Hanley-McNeil SE), PR-AUC / average precision (bootstrap SE,
+  B = 1000, seed 42; chance level = prevalence), optimal-threshold F1 with
+  its precision and recall (maximized along the PR curve).
+
+Outputs (--outdir)
+------------------
+  SPAREAD_5yr_<selection>_log.txt
+  SPAREAD_5yr_<selection>_rows.csv      one row per subject x window
+  SPAREAD_5yr_<selection>_metrics.csv
+  SPAREAD_5yr_<selection>_Fig8a_CNtoMCI.{png,pdf,svg}
+  SPAREAD_5yr_<selection>_Fig8b_MCItoAD.{png,pdf,svg}
+"""
+
 import argparse
-from plotly.subplots import make_subplots
-import plotly.express as px
-import plotly.graph_objects as go
+import os
+import sys
 
-##### Functions ########
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from sklearn.metrics import (auc, average_precision_score,
+                             precision_recall_curve, roc_curve)
 
-def calculate_rate_of_change(group, column='y'):
-    slope, intercept = np.polyfit(group['time'], group[column], 1)
-    return slope
-
-def calculate_rate_of_change_prediction(group, column='prediction'):
-    slope, intercept = np.polyfit(group['time'], group[column], 1)
-    return slope
-
-def youden_operating_point(y_true, y_score):
-    fpr, tpr, thr = roc_curve(y_true, y_score)
-    j = tpr - fpr
-    i = np.argmax(j)
-    return {
-        "threshold": thr[i],
-        "TPR": float(tpr[i]),
-        "FPR": float(fpr[i]),
-        "specificity": float(1 - fpr[i]),
-        "youden_J": float(j[i]),
-    }
-
-def ppv_fdr_at_threshold(y_true, y_score, thr):
-    y_pred = (y_score >= thr).astype(int)
-    TP = int(((y_pred==1) & (y_true==1)).sum())
-    FP = int(((y_pred==1) & (y_true==0)).sum())
-    PPV = TP / (TP + FP) if (TP + FP) > 0 else np.nan
-    FDR = 1 - PPV if not np.isnan(PPV) else np.nan
-    return float(PPV), float(FDR)
-
-# -------------------------------
-# NEW: PR-AUC and F1 utilities
-# -------------------------------
-
-def calculate_prauc(y_true, y_score):
-    """
-    Compute PR-AUC (average precision) and its bootstrap SE.
-    Uses sklearn's average_precision_score which computes the
-    area under the precision-recall curve using the trapezoidal rule.
-    Bootstrap SE is estimated over 1000 resamples.
-    """
-    ap = average_precision_score(y_true, y_score)
-    
-    # Bootstrap SE
-    n_bootstrap = 1000
-    ap_boot = []
-    rng = np.random.default_rng(42)
-    for _ in range(n_bootstrap):
-        idx = rng.choice(len(y_true), size=len(y_true), replace=True)
-        if len(np.unique(y_true[idx])) < 2:
-            continue
-        ap_boot.append(average_precision_score(y_true[idx], y_score[idx]))
-    se = float(np.std(ap_boot)) if ap_boot else np.nan
-    return float(ap), se
-
-def calculate_f1_at_threshold(y_true, y_score, threshold=None):
-    """
-    Compute F1 score. If threshold is None, finds the threshold
-    that maximises F1 on the precision-recall curve (optimal F1).
-    Returns F1, precision, recall, and the threshold used.
-    """
-    precision_vals, recall_vals, thresholds = precision_recall_curve(y_true, y_score)
-    
-    # precision_recall_curve appends a final point (precision=1, recall=0)
-    # with no corresponding threshold; align arrays
-    f1_vals = np.where(
-        (precision_vals[:-1] + recall_vals[:-1]) > 0,
-        2 * precision_vals[:-1] * recall_vals[:-1] / (precision_vals[:-1] + recall_vals[:-1]),
-        0.0
-    )
-    
-    if threshold is None:
-        best_idx = np.argmax(f1_vals)
-        best_thr = thresholds[best_idx]
-    else:
-        best_thr = threshold
-        diffs = np.abs(thresholds - best_thr)
-        best_idx = np.argmin(diffs)
-    
-    return {
-        "F1":        float(f1_vals[best_idx]),
-        "Precision": float(precision_vals[best_idx]),
-        "Recall":    float(recall_vals[best_idx]),
-        "threshold": float(best_thr),
-    }
-
-def calculate_auc_se(y_true, y_scores):
-    """Hanley-McNeil SE for ROC-AUC."""
-    fpr, tpr, _ = roc_curve(y_true, y_scores)
-    auc_val = auc(fpr, tpr)
-    n1 = np.sum(y_true)
-    n2 = len(y_true) - n1
-    Q1 = auc_val / (2 - auc_val)
-    Q2 = 2 * auc_val**2 / (1 + auc_val)
-    se = np.sqrt((auc_val * (1 - auc_val) +
-                  (n1 - 1) * (Q1 - auc_val**2) +
-                  (n2 - 1) * (Q2 - auc_val**2)) / (n1 * n2))
-    return auc_val, se
-
-# -------------------------------
-font_size = 19
-resultdir = '/home/cbica/Desktop/LongGPClustering'
-
-parser = argparse.ArgumentParser(description='Updated Plots')
-parser.add_argument("--datasets", help="GPUs", default='allstudies')
-args = parser.parse_args()
-datasets = args.datasets
-
-print("="*80)
-print("SPARE-AD LONGITUDINAL ANALYSIS FOR NATURE AGING MANUSCRIPT")
-print("="*80)
-print(f"Analysis datasets: {datasets}")
-print(f"Result directory: {resultdir}")
-print()
-
-#### STRATIFY METRICS COVARIATES #####
-print("Loading longitudinal covariates...")
-longitudinal_covariates = pd.read_csv(
-    '/home/cbica/Desktop/LongGPRegressionBaseline/'
-    'longitudinal_covariates_subjectsamples_longclean_hmuse_convs_allstudies.csv'
-)
-longitudinal_covariates['Diagnosis'].replace(
-    [-1.0, 0.0, 1.0, 2.0], ['UKN', 'CN', 'MCI', 'AD'], inplace=True
-)
-
-print(f"Total subjects in longitudinal covariates: {len(longitudinal_covariates['PTID'].unique())}")
-print(f"Total observations: {len(longitudinal_covariates)}")
-print(f"Diagnosis distribution:")
-print(longitudinal_covariates['Diagnosis'].value_counts())
-print()
-
-race_mapping = {
-    'White': 'White', 'Black': 'Black', 'Asian': 'Asian',
-    'Chinese': 'Asian', 'Japanese': 'Asian', 'Filipino': 'Asian',
-    'Other Asian or Other Pacific Islander': 'Asian',
-    'Hawaiian/Other PI': 'Pacific Islander',
-    'Am Indian/Alaskan': 'American Indian',
-    'American Indian or Alaska Native': 'American Indian',
-    'More than one': 'More than one',
-    'Unknown': 'Unknown', 'Not Classifiable': 'Unknown',
-    'Other NonWhite': 'Other NonWhite'
-}
-longitudinal_covariates = longitudinal_covariates.replace(race_mapping)
-
-##### PLOT METRICS ####
-roi_names = ['SPARE_AD']
-roi_idxs  = [0]
-
-df_metrics_over_time = {
-    'biomarker':[], 'id': [], 'time': [], 'Tobs': [],
-    'y': [], 'model': [], 'history': [], 'prediction': [],
-    'status': [], 'sex': [], 'race': [], 'education': [], 'apoe4': []
-}
-df_rate_of_change_over_time = {
-    'biomarker':[], 'id': [], 'Tobs': [], 'model': [],
-    'history': [], 'prediction': [], 'real': [], 'error': [], 'status':[]
-}
-
-for roi_idx, task in enumerate(roi_names):
-    print(f"Processing {task} biomarker...")
-
-    tempdkgp = pd.read_csv(
-        './manuscript1/adaptive_shrinkage_predictions_alpha_simple_dkgp_SPARE_AD_allstudies.csv'
-    )
-    print(f"Loaded predictions file with {len(tempdkgp)} total observations")
-    print(f"Unique subjects in predictions: {len(tempdkgp['id'].unique())}")
-
-    total_ids = tempdkgp['id'].unique().tolist()
-
-    subject_counts = {
-        'Healthy Control': 0, 'CN Progressor to MCI': 0, 'AD Progressor': 0,
-        'MCI Stable': 0, 'AD': 0, 'MCI Progressor': 0, 'UKN': 0
-    }
-    total_observations      = 0
-    subjects_with_covariates    = 0
-    subjects_without_covariates = 0
-
-    for s in total_ids:
-        tempdkgp_s = tempdkgp[tempdkgp['id'] == s]
-        longitudinal_covariates_u = longitudinal_covariates[longitudinal_covariates['PTID'] == s]
-
-        if longitudinal_covariates_u.shape[0] == 0:
-            subjects_without_covariates += 1
-            continue
-        subjects_with_covariates += 1
-
-        race      = longitudinal_covariates_u['Race'].to_list()[0]
-        sex       = longitudinal_covariates_u['Sex'].to_list()[0]
-        sex       = 'M' if sex == 0 else 'F'
-        apoe4     = longitudinal_covariates_u['APOE4_Alleles'].to_list()[0]
-        education = longitudinal_covariates_u['Education_Years'].to_list()[0]
-        education = '0-16 years' if education == 0 else '16 or more years'
-        if apoe4 == -1:
-            apoe4 = 'UNK'
-
-        diagnosis = longitudinal_covariates_u['Diagnosis'].tolist()
-        if   diagnosis[0]=='CN'  and diagnosis[-1]=='CN':  status = 'Healthy Control'
-        elif diagnosis[0]=='CN'  and diagnosis[-1]=='MCI': status = 'CN Progressor to MCI'
-        elif diagnosis[0]=='CN'  and diagnosis[-1]=='AD':  status = 'AD Progressor'
-        elif diagnosis[0]=='MCI' and diagnosis[-1]=='MCI': status = 'MCI Stable'
-        elif diagnosis[0]=='AD'  and diagnosis[-1]=='AD':  status = 'AD'
-        elif diagnosis[0]=='MCI' and diagnosis[-1]=='AD':  status = 'MCI Progressor'
-        else:                                               status = 'UKN'
-
-        subject_counts[status] += 1
-        total_observations += len(tempdkgp_s['y'].to_list())
-
-        n = len(tempdkgp_s['y'].to_list())
-        df_metrics_over_time['time'].extend(tempdkgp_s['time'].to_list())
-        df_metrics_over_time['id'].extend(tempdkgp_s['id'].to_list())
-        df_metrics_over_time['y'].extend(tempdkgp_s['y'].to_list())
-        df_metrics_over_time['history'].extend(tempdkgp_s['History'].to_list())
-        df_metrics_over_time['Tobs'].extend(tempdkgp_s['time'].to_list())
-        df_metrics_over_time['prediction'].extend(tempdkgp_s['score'].to_list())
-        df_metrics_over_time['status'].extend([status]*n)
-        df_metrics_over_time['sex'].extend([sex]*n)
-        df_metrics_over_time['race'].extend([race]*n)
-        df_metrics_over_time['education'].extend([education]*n)
-        df_metrics_over_time['apoe4'].extend([apoe4]*n)
-        df_metrics_over_time['biomarker'].extend([roi_names[roi_idx]]*n)
-        df_metrics_over_time['model'].extend(['TempDKGP']*n)
-
-        history_points = tempdkgp_s['History'].unique()
-        for h in history_points:
-            tempdkgp_s_h = tempdkgp_s[tempdkgp_s['History'] == h]
-            slope,      _ = np.polyfit(tempdkgp_s_h['time'], tempdkgp_s_h['score'], 1)
-            real_slope, _ = np.polyfit(tempdkgp_s_h['time'], tempdkgp_s_h['y'], 1)
-            error = abs(slope - real_slope)
-
-            df_rate_of_change_over_time['id'].append(s)
-            df_rate_of_change_over_time['Tobs'].append(tempdkgp_s_h['time'].to_list()[h-1])
-            df_rate_of_change_over_time['biomarker'].append(roi_names[roi_idx])
-            df_rate_of_change_over_time['model'].append('TempDKGP')
-            df_rate_of_change_over_time['history'].append(h)
-            df_rate_of_change_over_time['prediction'].append(slope)
-            df_rate_of_change_over_time['real'].append(real_slope)
-            df_rate_of_change_over_time['error'].append(error)
-            df_rate_of_change_over_time['status'].append(status)
-
-    df = pd.DataFrame(data=df_metrics_over_time)
-    df_roc = pd.DataFrame(data=df_rate_of_change_over_time)
-    df_roc.to_csv('./nataging/SPAREAD_Experiment_Section2_RateOfChange_'+datasets+'_'+roi_names[roi_idx]+'.csv')
-    df.to_csv('./nataging/SPAREAD_Experiment_Section2_AdaptedPredictions_'+datasets+'_'+roi_names[roi_idx]+'.csv')
-
-
-# ================================================================
-# DISCRIMINATION ANALYSIS — ROC + PR metrics
-# ================================================================
-print("\n" + "="*80)
-print("DISCRIMINATION ANALYSIS (ROC-AUC + PR-AUC + F1)")
-print("="*80)
-
-df = pd.read_csv("./manuscript1/SPAREAD_Experiment_Section2_RateOfChange_allstudies_SPARE_AD.csv")
-
-# Convert Tobs to years and bin
-df['Tobs_years'] = df['Tobs'] / 12.0
-df['year_bin'] = pd.cut(
-    df['Tobs_years'],
-    bins=[0, 1, 2, 3, 4, 5, float('inf')],
-    labels=['0-1', '1-2', '2-3', '3-4', '4-5', '5+'],
-    include_lowest=True
-)
-
-comparison_pairs = [
-    ("Healthy Control",  "CN Progressor to MCI"),
-    ("MCI Stable",       "MCI Progressor"),
+HORIZON = 60.0
+WINDOWS = {'0-1yr': (0.0, 12.0), '2-3yr': (24.0, 36.0)}
+WINDOW_TITLES = {'0-1yr': '0-1 year since baseline', '2-3yr': '2-3 years since baseline'}
+COMPARISONS = [  # label, positive, negative, figure panel
+    ('CN-to-MCI', 'CN_to_MCI_5y', 'CN_stable', 'Fig8a_CNtoMCI'),
+    ('MCI-to-AD', 'MCI_to_AD_5y', 'MCI_stable', 'Fig8b_MCItoAD'),
 ]
+FEATURES = [('Predicted', 'predicted_slope'), ('Real', 'real_slope')]
+N_BOOT, SEED = 1000, 42
 
-year_bins = ['0-1', '1-2', '2-3', '3-4', '4-5', '5+']
-results_tobs = []
 
-for year_bin in year_bins:
-    df_bin = df[df["year_bin"] == year_bin]
-    print(f"\nYear bin {year_bin}: {len(df_bin)} obs, {len(df_bin['id'].unique())} subjects")
+# =============================================================================
+# COHORT
+# =============================================================================
 
-    for g1, g2 in comparison_pairs:
-        sub_df = df_bin[df_bin["status"].isin([g1, g2])].copy()
-        sub_df["label"] = (sub_df["status"] == g2).astype(int)
+def horizon_status(dx, tobs):
+    """Return (status, conversion_time) for one subject."""
+    base = dx[0]
+    if base not in ('CN', 'MCI'):
+        return 'ineligible', None
+    change = next(((i, d) for i, d in enumerate(dx)
+                   if d != 'UKN' and d != base), None)
+    if change is None:
+        if max(tobs) < HORIZON:
+            return 'ineligible', None
+        return f'{base}_stable', None
+    i, to = change
+    if tobs[i] > HORIZON:
+        return 'ineligible', None
+    if (base, to) == ('CN', 'MCI'):
+        return 'CN_to_MCI_5y', tobs[i]
+    if (base, to) == ('MCI', 'AD'):
+        return 'MCI_to_AD_5y', tobs[i]
+    return 'ineligible', None
 
-        grouped_real  = sub_df.groupby("id")["real"].mean()
-        grouped_pred  = sub_df.groupby("id")["prediction"].mean()
-        grouped_label = sub_df.groupby("id")["label"].first()
 
-        if len(grouped_label.unique()) < 2 or len(grouped_label) < 10:
-            print(f"  {g1} vs {g2}: Insufficient data (n={len(grouped_label)})")
+def build_cohort(cov, pred):
+    """Diagnoses from the covariates file are paired, in order, with the
+    subject's sorted prediction time points (truncated to the shorter)."""
+    times = {s: np.sort(g['time'].unique()) for s, g in pred.groupby('id')}
+    rec, mismatch = [], 0
+    for ptid, g in cov.groupby('PTID', sort=False):
+        if ptid not in times:
             continue
-
-        y_true  = grouped_label.values.astype(int)
-        y_real  = grouped_real.values
-        y_pred  = grouped_pred.values
-
-        # ---- ROC-AUC ----
-        auc_real, se_real = calculate_auc_se(y_true, y_real)
-        auc_pred, se_pred = calculate_auc_se(y_true, y_pred)
-
-        # ---- Youden operating point ----
-        op_real = youden_operating_point(y_true, y_real)
-        op_pred = youden_operating_point(y_true, y_pred)
-        ppv_real, fdr_real = ppv_fdr_at_threshold(y_true, y_real, op_real["threshold"])
-        ppv_pred, fdr_pred = ppv_fdr_at_threshold(y_true, y_pred, op_pred["threshold"])
-
-        # ---- PR-AUC (average precision) ----
-        prauc_real, prase_real = calculate_prauc(y_true, y_real)
-        prauc_pred, prase_pred = calculate_prauc(y_true, y_pred)
-
-        # ---- Optimal F1 (maximised over PR threshold) ----
-        f1_real = calculate_f1_at_threshold(y_true, y_real)
-        f1_pred = calculate_f1_at_threshold(y_true, y_pred)
-
-        # ---- Baseline PR-AUC (prevalence = random classifier) ----
-        prevalence = y_true.mean()
-
-        print(f"  {g1} vs {g2}:")
-        print(f"    n={len(y_true)}, prevalence={prevalence:.3f}")
-        print(f"    ROC-AUC  — Real: {auc_real:.3f}±{se_real:.3f} | Pred: {auc_pred:.3f}±{se_pred:.3f}")
-        print(f"    PR-AUC   — Real: {prauc_real:.3f}±{prase_real:.3f} | Pred: {prauc_pred:.3f}±{prase_pred:.3f} (baseline={prevalence:.3f})")
-        print(f"    Best F1  — Real: {f1_real['F1']:.3f} (P={f1_real['Precision']:.3f}, R={f1_real['Recall']:.3f}) | "
-              f"Pred: {f1_pred['F1']:.3f} (P={f1_pred['Precision']:.3f}, R={f1_pred['Recall']:.3f})")
-        print(f"    Youden   — Real: TPR={op_real['TPR']:.3f}, PPV={ppv_real:.3f} | "
-              f"Pred: TPR={op_pred['TPR']:.3f}, PPV={ppv_pred:.3f}")
-
-        results_tobs.append({
-            "year_bin": year_bin,
-            "comparison": f"{g1} vs {g2}",
-            "N": int(len(y_true)),
-            "Prevalence": float(prevalence),
-
-            # ROC-AUC
-            "ROCAUC_Real":    float(auc_real),
-            "ROCAUC_SE_Real": float(se_real),
-            "ROCAUC_Pred":    float(auc_pred),
-            "ROCAUC_SE_Pred": float(se_pred),
-
-            # PR-AUC
-            "PRAUC_Real":    float(prauc_real),
-            "PRAUC_SE_Real": float(prase_real),
-            "PRAUC_Pred":    float(prauc_pred),
-            "PRAUC_SE_Pred": float(prase_pred),
-            "PRAUC_Baseline": float(prevalence),
-
-            # Optimal F1 — Real
-            "F1_Real":        f1_real["F1"],
-            "Precision_Real": f1_real["Precision"],
-            "Recall_Real":    f1_real["Recall"],
-
-            # Optimal F1 — Predicted
-            "F1_Pred":        f1_pred["F1"],
-            "Precision_Pred": f1_pred["Precision"],
-            "Recall_Pred":    f1_pred["Recall"],
-
-            # Youden — Real
-            "TPR_Real_Youden": op_real["TPR"],
-            "FPR_Real_Youden": op_real["FPR"],
-            "PPV_Real_Youden": ppv_real,
-
-            # Youden — Predicted
-            "TPR_Pred_Youden": op_pred["TPR"],
-            "FPR_Pred_Youden": op_pred["FPR"],
-            "PPV_Pred_Youden": ppv_pred,
-        })
-
-results_tobs_df = pd.DataFrame(results_tobs)
-results_tobs_df.to_csv("./nataging/SPAREAD_Experiment_Discrimination_AllMetrics_by_Time.csv", index=False)
-
-# ================================================================
-# FIGURES — ROC + PR curves side by side, per year bin
-# ================================================================
-print("\nGenerating publication-quality ROC + PR curve figures...")
-
-plt.rcParams.update({
-    'font.size': 12,
-    'axes.linewidth': 1.5,
-    'axes.spines.top': False,
-    'axes.spines.right': False,
-    'xtick.major.width': 1.5,
-    'ytick.major.width': 1.5,
-    'xtick.major.size': 5,
-    'ytick.major.size': 5,
-    'legend.frameon': False,
-})
-
-for year_bin in ['0-1', '2-3']:          # manuscript focal bins
-    fig, axes = plt.subplots(2, 2, figsize=(14, 12))
-    fig.suptitle(
-        f'SPARE-AD Rate of Change Discrimination — {year_bin} Years Since Baseline',
-        fontsize=16, y=0.98
-    )
-
-    for comp_idx, (g1, g2) in enumerate(comparison_pairs):
-        ax_roc = axes[comp_idx, 0]
-        ax_pr  = axes[comp_idx, 1]
-
-        df_bin = df[df["year_bin"] == year_bin]
-        sub_df = df_bin[df_bin["status"].isin([g1, g2])].copy()
-        sub_df["label"] = (sub_df["status"] == g2).astype(int)
-
-        grouped_real  = sub_df.groupby("id")["real"].mean()
-        grouped_pred  = sub_df.groupby("id")["prediction"].mean()
-        grouped_label = sub_df.groupby("id")["label"].first()
-
-        if len(grouped_label.unique()) < 2 or len(grouped_label) < 10:
+        dx, t = g['Diagnosis'].tolist(), list(times[ptid])
+        if len(dx) != len(t):
+            mismatch += 1
+            k = min(len(dx), len(t)); dx, t = dx[:k], t[:k]
+        if not dx:
             continue
+        st, ct = horizon_status(dx, t)
+        rec.append({'PTID': ptid, 'status': st, 'conversion_time': ct})
+    df = pd.DataFrame(rec)
+    print(f'  diagnosis/time length mismatches (truncated): {mismatch}')
+    print(df['status'].value_counts().to_string())
+    return df[df['status'] != 'ineligible'].set_index('PTID')
 
-        y_true = grouped_label.values.astype(int)
-        y_real = grouped_real.values
-        y_pred = grouped_pred.values
 
-        prevalence = y_true.mean()
+# =============================================================================
+# WINDOW ROWS
+# =============================================================================
 
-        # -- ROC curves --
-        fpr_r, tpr_r, _ = roc_curve(y_true, y_real)
-        fpr_p, tpr_p, _ = roc_curve(y_true, y_pred)
-        auc_r = auc(fpr_r, tpr_r)
-        auc_p = auc(fpr_p, tpr_p)
+def window_rows(pred, cohort, selection):
+    rows, excluded = [], {w: 0 for w in WINDOWS}
+    for sid, g in pred.groupby('id'):
+        if sid not in cohort.index:
+            continue
+        st, ct = cohort.at[sid, 'status'], cohort.at[sid, 'conversion_time']
+        for w, (lo, hi) in WINDOWS.items():
+            if pd.notna(ct) and ct < lo:          # already converted
+                excluded[w] += 1
+                continue
+            win = g[(g['time'] >= lo) & (g['time'] < hi)]
+            if win.empty:
+                continue
+            tau = win['time'].max()
+            cand = win[win['time'] == tau]
+            if selection == 'prospective':
+                cand = cand[cand['Tobs'] <= tau]
+                if cand.empty:
+                    continue
+            row = cand.sort_values('History', ascending=False).iloc[0]
+            yrs = tau / 12.0
+            rows.append({'id': sid, 'status': st, 'window': w, 'tau': tau,
+                         'History': int(row['History']), 'Tobs': row['Tobs'],
+                         'score': row['score'], 'y': row['y'],
+                         'predicted_slope': row['score'] / yrs if tau > 0 else np.nan,
+                         'real_slope':      row['y'] / yrs if tau > 0 else np.nan})
+    for w, n in excluded.items():
+        print(f'  {w}: {n} converters excluded (converted before window opened)')
 
-        ax_roc.plot(fpr_r, tpr_r, color='red',  linestyle='--', linewidth=2.5,
-                    label=f'Real (AUC={auc_r:.3f})')
-        ax_roc.plot(fpr_p, tpr_p, color='blue', linestyle='-',  linewidth=2.5,
-                    label=f'Predicted (AUC={auc_p:.3f})')
-        ax_roc.plot([0,1],[0,1], 'k--', alpha=0.4, linewidth=1)
-        ax_roc.set_xlabel('False Positive Rate', fontsize=12)
-        ax_roc.set_ylabel('True Positive Rate', fontsize=12)
-        ax_roc.set_title(f'ROC — {g1} vs {g2}\nn={len(y_true)}', fontsize=12)
-        ax_roc.set_xlim([0,1]); ax_roc.set_ylim([0,1])
-        ax_roc.legend(fontsize=10)
-        ax_roc.set_aspect('equal')
+    df = pd.DataFrame(rows)
+    # Nested later risk set: 2-3 yr restricted to subjects valid at 0-1 yr
+    ids01 = set(df.loc[(df['window'] == '0-1yr') & df['predicted_slope'].notna(), 'id'])
+    df = df[(df['window'] == '0-1yr') | df['id'].isin(ids01)]
+    return df
 
-        # -- PR curves --
-        prec_r, rec_r, _ = precision_recall_curve(y_true, y_real)
-        prec_p, rec_p, _ = precision_recall_curve(y_true, y_pred)
-        ap_r = average_precision_score(y_true, y_real)
-        ap_p = average_precision_score(y_true, y_pred)
 
-        ax_pr.plot(rec_r, prec_r, color='red',  linestyle='--', linewidth=2.5,
-                   label=f'Real (AP={ap_r:.3f})')
-        ax_pr.plot(rec_p, prec_p, color='blue', linestyle='-',  linewidth=2.5,
-                   label=f'Predicted (AP={ap_p:.3f})')
-        # Baseline: random classifier
-        ax_pr.axhline(y=prevalence, color='gray', linestyle=':', linewidth=1.5,
-                      label=f'Baseline (prev={prevalence:.3f})')
-        ax_pr.set_xlabel('Recall', fontsize=12)
-        ax_pr.set_ylabel('Precision', fontsize=12)
-        ax_pr.set_title(f'PR Curve — {g1} vs {g2}\nn={len(y_true)}', fontsize=12)
-        ax_pr.set_xlim([0,1]); ax_pr.set_ylim([0,1])
-        ax_pr.legend(fontsize=10)
-        ax_pr.set_aspect('equal')
+# =============================================================================
+# METRICS
+# =============================================================================
 
-    plt.tight_layout()
-    bin_label = year_bin.replace('+','plus').replace('-','to')
-    plt.savefig(f"./nataging/SPAREAD_ROC_PR_Curves_{bin_label}yr.png", dpi=300, bbox_inches='tight')
-    plt.savefig(f"./nataging/SPAREAD_ROC_PR_Curves_{bin_label}yr.svg", dpi=300, bbox_inches='tight')
+def hanley_mcneil(y, s):
+    fpr, tpr, _ = roc_curve(y, s)
+    a = auc(fpr, tpr)
+    n1, n2 = int(y.sum()), int(len(y) - y.sum())
+    q1, q2 = a / (2 - a), 2 * a ** 2 / (1 + a)
+    se = np.sqrt((a * (1 - a) + (n1 - 1) * (q1 - a ** 2)
+                  + (n2 - 1) * (q2 - a ** 2)) / (n1 * n2))
+    return a, se
+
+
+def pr_auc_boot(y, s):
+    ap = average_precision_score(y, s)
+    rng = np.random.default_rng(SEED)
+    boot = []
+    for _ in range(N_BOOT):
+        i = rng.choice(len(y), len(y), replace=True)
+        if len(np.unique(y[i])) == 2:
+            boot.append(average_precision_score(y[i], s[i]))
+    return ap, np.std(boot)
+
+
+def best_f1(y, s):
+    p, r, _ = precision_recall_curve(y, s)
+    d = p[:-1] + r[:-1]
+    f1 = np.divide(2 * p[:-1] * r[:-1], d, out=np.zeros_like(d), where=d > 0)
+    k = int(np.argmax(f1))
+    return f1[k], p[k], r[k]
+
+
+def evaluate(df, pos, neg, col):
+    sub = df[df['status'].isin([pos, neg])].dropna(subset=[col])
+    y = (sub['status'] == pos).astype(int).values
+    s = sub[col].astype(float).values
+    if len(y) < 10 or len(np.unique(y)) < 2:
+        return None
+    a, a_se = hanley_mcneil(y, s)
+    ap, ap_se = pr_auc_boot(y, s)
+    f1, p, r = best_f1(y, s)
+    return {'N': len(y), 'N_pos': int(y.sum()), 'prevalence': y.mean(),
+            'ROC_AUC': a, 'ROC_AUC_SE': a_se, 'PR_AUC': ap, 'PR_AUC_SE': ap_se,
+            'F1': f1, 'precision': p, 'recall': r, '_y': y, '_s': s}
+
+
+# =============================================================================
+# FIGURE 8
+# =============================================================================
+
+def figure8(cache, comp, pos_lbl, neg_lbl, path):
+    plt.rcParams.update({'font.size': 12, 'axes.linewidth': 1.5,
+                         'axes.spines.top': False, 'axes.spines.right': False,
+                         'legend.frameon': False})
+    fig, axes = plt.subplots(2, 2, figsize=(12, 12))
+    style = {'Real': ('red', '--'), 'Predicted': ('blue', '-')}
+    for r, w in enumerate(WINDOWS):
+        ax_roc, ax_pr = axes[r]
+        res = {f: cache.get((w, comp, f)) for f, _ in FEATURES}
+        ref = res['Predicted'] or res['Real']
+        if ref is None:
+            ax_roc.set_visible(False); ax_pr.set_visible(False); continue
+        for f in ('Real', 'Predicted'):
+            if res[f] is None:
+                continue
+            c, ls = style[f]
+            fpr, tpr, _ = roc_curve(res[f]['_y'], res[f]['_s'])
+            ax_roc.plot(fpr, tpr, color=c, ls=ls, lw=2.5,
+                        label=f"{f} (AUC={res[f]['ROC_AUC']:.3f})")
+            p, rc, _ = precision_recall_curve(res[f]['_y'], res[f]['_s'])
+            ax_pr.plot(rc, p, color=c, ls=ls, lw=2.5,
+                       label=f"{f} (AP={res[f]['PR_AUC']:.3f})")
+        ax_roc.plot([0, 1], [0, 1], 'k--', alpha=0.4, lw=1)
+        ax_pr.axhline(ref['prevalence'], color='gray', ls=':', lw=1.5,
+                      label=f"Baseline (prev={ref['prevalence']:.3f})")
+        title = f"{neg_lbl} vs {pos_lbl}\nn={ref['N']}"
+        ax_roc.set(xlim=(0, 1), ylim=(0, 1), xlabel='False Positive Rate',
+                   ylabel='True Positive Rate', title=title, aspect='equal')
+        ax_pr.set(xlim=(0, 1), ylim=(0, 1), xlabel='Recall',
+                  ylabel='Precision', title=title, aspect='equal')
+        ax_roc.legend(fontsize=10); ax_pr.legend(fontsize=10)
+        fig.text(0.5, 0.97 - 0.49 * r, WINDOW_TITLES[w],
+                 ha='center', fontsize=14)
+    plt.tight_layout(rect=(0, 0, 1, 0.96), h_pad=4)
+    for ext in ('png', 'pdf', 'svg'):
+        plt.savefig(f'{path}.{ext}', dpi=300, bbox_inches='tight')
     plt.close()
-    print(f"  Saved ROC+PR figure for {year_bin} year bin")
 
-# ================================================================
-# SUMMARY TABLE — manuscript focal bins only (0-1 and 2-3 years)
-# ================================================================
-print("\n" + "="*80)
-print("MANUSCRIPT SUMMARY — 0-1 and 2-3 year bins")
-print("="*80)
 
-focal = results_tobs_df[results_tobs_df["year_bin"].isin(["0-1","2-3"])]
-cols  = [
-    "year_bin","comparison","N","Prevalence",
-    "ROCAUC_Pred","ROCAUC_SE_Pred",
-    "PRAUC_Pred","PRAUC_SE_Pred","PRAUC_Baseline",
-    "F1_Pred","Precision_Pred","Recall_Pred",
-    "TPR_Pred_Youden","PPV_Pred_Youden",
-    "ROCAUC_Real","ROCAUC_SE_Real",
-    "PRAUC_Real","PRAUC_SE_Real",
-    "F1_Real","Precision_Real","Recall_Real",
-]
-print(focal[cols].to_string(index=False))
-focal[cols].to_csv("./nataging/SPAREAD_ManuscriptFocal_AllMetrics.csv", index=False)
+# =============================================================================
+# MAIN
+# =============================================================================
 
-print("\nAll files saved to ./nataging/")
-print("Analysis complete.")
+class Tee:
+    def __init__(self, path):
+        self.f, self.s = open(path, 'w'), sys.__stdout__
+    def write(self, t):
+        self.s.write(t); self.f.write(t)
+    def flush(self):
+        self.s.flush(); self.f.flush()
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__.split('\n')[1])
+    ap.add_argument('--predictions_csv', default='./manuscript1/'
+                    'adaptive_shrinkage_predictions_alpha_simple_dkgp_SPARE_AD_allstudies.csv')
+    ap.add_argument('--covariates_csv', default='longitudinal_covariates_'
+                    'subjectsamples_longclean_hmuse_convs_allstudies.csv')
+    ap.add_argument('--row_selection', choices=['prospective', 'original'],
+                    default='prospective')
+    ap.add_argument('--outdir', default='./manuscript1/spare_ad_5yr_horizon')
+    a = ap.parse_args()
+
+    os.makedirs(a.outdir, exist_ok=True)
+    pre = os.path.join(a.outdir, f'SPAREAD_5yr_{a.row_selection}')
+    sys.stdout = Tee(f'{pre}_log.txt')
+    print(f'SPARE-AD 5-year horizon discrimination | row selection: {a.row_selection}')
+
+    cov = pd.read_csv(a.covariates_csv)
+    cov['Diagnosis'] = cov['Diagnosis'].replace(
+        {-1.0: 'UKN', 0.0: 'CN', 1.0: 'MCI', 2.0: 'AD'})
+    pred = pd.read_csv(a.predictions_csv)
+
+    print('\n-- Horizon status --')
+    cohort = build_cohort(cov, pred)
+
+    print('\n-- Window rows --')
+    rows = window_rows(pred, cohort, a.row_selection)
+    rows.to_csv(f'{pre}_rows.csv', index=False)
+    valid = rows.dropna(subset=['predicted_slope'])
+    print(valid.groupby(['window', 'status']).size().unstack(fill_value=0).to_string())
+    print('\n  Personalization level used at tau (History) by window:')
+    print(valid.groupby(['window', 'History']).size().unstack(fill_value=0).to_string())
+    n_future = int((valid['Tobs'] > valid['tau']).sum())
+    print(f'  rows whose prediction used visits after tau: {n_future}')
+
+    print('\n-- Discrimination --')
+    out, cache = [], {}
+    for w in WINDOWS:
+        dfw = rows[rows['window'] == w]
+        for comp, pos, neg, _ in COMPARISONS:
+            for f, col in FEATURES:
+                r = evaluate(dfw, pos, neg, col)
+                if r is None:
+                    print(f'  {w} {comp} [{f}]: insufficient data'); continue
+                cache[(w, comp, f)] = r
+                print(f"  {w} {comp} [{f}]: n={r['N']} (pos={r['N_pos']}, "
+                      f"prev={r['prevalence']:.3f})  ROC-AUC={r['ROC_AUC']:.3f}"
+                      f"±{r['ROC_AUC_SE']:.3f}  PR-AUC={r['PR_AUC']:.3f}"
+                      f"±{r['PR_AUC_SE']:.3f}  F1={r['F1']:.3f} "
+                      f"(P={r['precision']:.3f}, R={r['recall']:.3f})")
+                out.append({'window': w, 'comparison': comp, 'feature': f,
+                            **{k: v for k, v in r.items() if not k.startswith('_')}})
+    pd.DataFrame(out).to_csv(f'{pre}_metrics.csv', index=False)
+
+    figure8(cache, 'CN-to-MCI', 'CN→MCI', 'CN stable', f'{pre}_Fig8a_CNtoMCI')
+    figure8(cache, 'MCI-to-AD', 'MCI→AD', 'MCI stable', f'{pre}_Fig8b_MCItoAD')
+    print(f'\nOutputs -> {a.outdir}')
+
+
+if __name__ == '__main__':
+    main()
