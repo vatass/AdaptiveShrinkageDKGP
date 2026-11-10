@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Manuscript 1 - Section 2.6 / Methods 4.9
+Section 2.6 / Methods 4.9
 Predicted vs observed rates of change for MCI progression classification
 under scanner-change conditions.
 
